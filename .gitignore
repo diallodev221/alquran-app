@@ -43,3 +43,7 @@ app.*.map.json
 /android/app/debug
 /android/app/profile
 /android/app/release
+
+# Override global gitignore for lib/ directory
+# The global gitignore ignores lib/, but we need to track Dart files
+!lib/
