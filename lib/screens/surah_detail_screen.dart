@@ -10,6 +10,8 @@ import '../providers/audio_providers.dart';
 import '../providers/favorites_providers.dart';
 import '../utils/responsive_utils.dart';
 import '../utils/surah_adapter.dart';
+import '../services/preload_service.dart';
+import '../services/settings_service.dart';
 
 class SurahDetailScreen extends ConsumerStatefulWidget {
   final Surah surah;
@@ -58,6 +60,34 @@ class _SurahDetailScreenState extends ConsumerState<SurahDetailScreen>
 
     _scrollController.addListener(_onScroll);
     _animationController.forward();
+
+    // Précharger les sourates adjacentes en arrière-plan
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _preloadAdjacentSurahs();
+    });
+  }
+
+  /// Précharge les sourates adjacentes pour une navigation fluide
+  Future<void> _preloadAdjacentSurahs() async {
+    try {
+      final quranApiService = ref.read(quranApiServiceProvider);
+      final audioService = ref.read(audioServiceProvider);
+      final settingsService = SettingsService();
+      await settingsService.init();
+
+      final preloadService = PreloadService(
+        quranApiService: quranApiService,
+        audioService: audioService,
+        settingsService: settingsService,
+      );
+
+      // Précharger en arrière-plan (ne pas bloquer l'UI)
+      preloadService.preloadAdjacentSurahs(widget.surah.number).catchError((e) {
+        debugPrint('⚠️ Failed to preload adjacent surahs: $e');
+      });
+    } catch (e) {
+      debugPrint('⚠️ Error setting up preload: $e');
+    }
   }
 
   @override

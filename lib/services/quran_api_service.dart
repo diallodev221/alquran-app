@@ -4,6 +4,7 @@ import 'package:flutter/foundation.dart';
 import '../core/exceptions/api_exceptions.dart';
 import '../models/quran_models.dart';
 import 'cache_service.dart';
+import 'memory_cache_service.dart';
 import 'package:hive/hive.dart';
 
 /// Service API pour Al-Quran Cloud
@@ -13,6 +14,7 @@ class QuranApiService {
 
   final Dio _dio;
   late final CacheService _cacheService;
+  final MemoryCacheService _memoryCache = MemoryCacheService();
 
   QuranApiService({Dio? dio}) : _dio = dio ?? _initDio() {
     _initCache();
@@ -72,14 +74,23 @@ class QuranApiService {
   Future<List<SurahModel>> getAllSurahs() async {
     const cacheKey = 'all_surahs';
 
-    // Vérifier cache d'abord
+    // 1. Vérifier cache mémoire d'abord (le plus rapide)
+    final memoryCached = _memoryCache.getList<List<SurahModel>>(cacheKey);
+    if (memoryCached != null) {
+      debugPrint('⚡ Returning memory-cached surahs');
+      return memoryCached;
+    }
+
+    // 2. Vérifier cache Hive (persistant)
     final cached = _cacheService.getIfValid<List>(
       cacheKey,
       (data) => (data as List).map((e) => SurahModel.fromJson(e)).toList(),
     );
 
     if (cached != null) {
-      debugPrint('📦 Returning cached surahs');
+      debugPrint('📦 Returning Hive-cached surahs');
+      // Mettre aussi en cache mémoire pour les prochaines fois
+      _memoryCache.putList(cacheKey, cached);
       return cached as List<SurahModel>;
     }
 
@@ -92,12 +103,15 @@ class QuranApiService {
             .map((e) => SurahModel.fromJson(e as Map<String, dynamic>))
             .toList();
 
-        // Sauvegarder en cache
+        // Sauvegarder en cache Hive (persistant)
         await _cacheService.saveWithExpiry(
           cacheKey,
           surahs.map((e) => e.toJson()).toList(),
           duration: CacheService.staticContentDuration,
         );
+
+        // Sauvegarder aussi en cache mémoire (ultra-rapide)
+        _memoryCache.putList(cacheKey, surahs);
 
         return surahs;
       }
@@ -111,6 +125,8 @@ class QuranApiService {
 
       if (staleCache != null) {
         debugPrint('⚠️ Using stale cache for surahs');
+        // Mettre en cache mémoire aussi
+        _memoryCache.putList(cacheKey, staleCache);
         return staleCache as List<SurahModel>;
       }
 
@@ -128,14 +144,27 @@ class QuranApiService {
         ? 'surah_${surahNumber}_${edition}_$translationEdition'
         : 'surah_${surahNumber}_$edition';
 
-    // Vérifier cache
+    // 1. Vérifier cache mémoire d'abord (le plus rapide)
+    final memoryCached = _memoryCache.get<SurahDetailModel>(cacheKey);
+    if (memoryCached != null) {
+      debugPrint('⚡ Returning memory-cached surah $surahNumber');
+      return memoryCached;
+    }
+
+    // 2. Vérifier cache Hive (persistant)
     final cached = _cacheService.getIfValid<SurahDetailModel>(
       cacheKey,
       (data) => SurahDetailModel.fromJson(data),
     );
 
     if (cached != null) {
-      debugPrint('📦 Returning cached surah $surahNumber');
+      debugPrint('📦 Returning Hive-cached surah $surahNumber');
+      // Mettre aussi en cache mémoire pour les prochaines fois
+      _memoryCache.put(
+        cacheKey,
+        cached,
+        expiry: CacheService.staticContentDuration,
+      );
       return cached;
     }
 
@@ -178,11 +207,18 @@ class QuranApiService {
 
       final surahDetail = SurahDetailModel.fromJson(surahData);
 
-      // Cache
+      // Cache Hive (persistant)
       await _cacheService.saveWithExpiry(
         cacheKey,
         surahDetail.toJson(),
         duration: CacheService.staticContentDuration,
+      );
+
+      // Cache mémoire (ultra-rapide)
+      _memoryCache.put(
+        cacheKey,
+        surahDetail,
+        expiry: CacheService.staticContentDuration,
       );
 
       return surahDetail;
@@ -195,6 +231,12 @@ class QuranApiService {
 
       if (staleCache != null) {
         debugPrint('⚠️ Using stale cache for surah $surahNumber');
+        // Mettre en cache mémoire aussi
+        _memoryCache.put(
+          cacheKey,
+          staleCache,
+          expiry: CacheService.staticContentDuration,
+        );
         return staleCache;
       }
 

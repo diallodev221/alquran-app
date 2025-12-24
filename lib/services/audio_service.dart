@@ -2,11 +2,13 @@ import 'package:dio/dio.dart';
 import 'package:flutter/foundation.dart';
 import '../models/quran_models.dart';
 import '../core/exceptions/api_exceptions.dart';
+import 'memory_cache_service.dart';
 
 /// Service pour gérer l'audio du Quran
 class AudioService {
   static const String baseUrl = 'https://api.alquran.cloud/v1';
   final Dio _dio;
+  final MemoryCacheService _memoryCache = MemoryCacheService();
 
   // Récitateurs populaires
   static const String defaultReciter = 'ar.alafasy'; // Mishary Alafasy
@@ -29,6 +31,15 @@ class AudioService {
     int surahNumber, {
     String reciter = defaultReciter,
   }) async {
+    final cacheKey = 'audio_urls_${surahNumber}_$reciter';
+
+    // 1. Vérifier cache mémoire d'abord (le plus rapide)
+    final memoryCached = _memoryCache.getList<List<String>>(cacheKey);
+    if (memoryCached != null) {
+      debugPrint('⚡ Returning memory-cached audio URLs for surah $surahNumber');
+      return memoryCached;
+    }
+
     try {
       final response = await _dio.get('/surah/$surahNumber/$reciter');
 
@@ -58,11 +69,20 @@ class AudioService {
           );
         }
 
+        // Mettre en cache mémoire pour les prochaines fois
+        _memoryCache.putList(cacheKey, audioUrls);
+
         return audioUrls;
       }
       throw ServerException('Failed to fetch audio URLs');
     } on DioException catch (e) {
       debugPrint('Error fetching audio: ${e.message}');
+      // En cas d'erreur, vérifier si on a un cache (même expiré)
+      final cached = _memoryCache.getList<List<String>>(cacheKey);
+      if (cached != null) {
+        debugPrint('⚠️ Using cached audio URLs despite error');
+        return cached;
+      }
       throw NetworkException('Impossible de charger l\'audio: ${e.message}');
     }
   }

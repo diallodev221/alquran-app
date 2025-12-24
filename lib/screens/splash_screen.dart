@@ -1,18 +1,23 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../theme/app_colors.dart';
 import '../widgets/app_logo.dart';
 import '../widgets/auto_play_listener.dart';
+import '../services/preload_service.dart';
+import '../services/settings_service.dart';
+import '../providers/quran_providers.dart';
+import '../providers/audio_providers.dart';
 import 'main_navigation.dart';
 
 /// Écran de démarrage avec le logo de l'application
-class SplashScreen extends StatefulWidget {
+class SplashScreen extends ConsumerStatefulWidget {
   const SplashScreen({super.key});
 
   @override
-  State<SplashScreen> createState() => _SplashScreenState();
+  ConsumerState<SplashScreen> createState() => _SplashScreenState();
 }
 
-class _SplashScreenState extends State<SplashScreen>
+class _SplashScreenState extends ConsumerState<SplashScreen>
     with SingleTickerProviderStateMixin {
   late AnimationController _controller;
   late Animation<double> _fadeAnimation;
@@ -42,23 +47,72 @@ class _SplashScreenState extends State<SplashScreen>
     );
 
     _controller.forward();
+    _startPreload();
+  }
 
-    // Naviguer vers l'écran principal après 2.5 secondes
-    Future.delayed(const Duration(milliseconds: 2500), () {
+  /// Démarre le préchargement des données
+  Future<void> _startPreload() async {
+    try {
+      // Créer le service de préchargement
+      final quranApiService = ref.read(quranApiServiceProvider);
+      final audioService = ref.read(audioServiceProvider);
+      final settingsService = SettingsService();
+      await settingsService.init();
+
+      final preloadService = PreloadService(
+        quranApiService: quranApiService,
+        audioService: audioService,
+        settingsService: settingsService,
+      );
+
+      // Lancer le préchargement (en arrière-plan)
+      final preloadFuture = preloadService.preloadEssentialData(
+        preloadSurahsCount: 5, // Précharger les 5 premières sourates
+      );
+
+      // Attendre au minimum 1.5 secondes pour l'animation
+      // et au maximum 3 secondes pour le préchargement
+      await Future.wait([
+        Future.delayed(const Duration(milliseconds: 1500)),
+        preloadFuture,
+      ], eagerError: false).timeout(
+        const Duration(seconds: 3),
+        onTimeout: () {
+          debugPrint('⏱️ Preload timeout, continuing anyway');
+          return <void>[];
+        },
+      );
+
       if (mounted) {
-        Navigator.of(context).pushReplacement(
-          PageRouteBuilder(
-            pageBuilder: (context, animation, secondaryAnimation) =>
-                const AutoPlayListener(child: MainNavigation()),
-            transitionsBuilder:
-                (context, animation, secondaryAnimation, child) {
-                  return FadeTransition(opacity: animation, child: child);
-                },
-            transitionDuration: const Duration(milliseconds: 600),
-          ),
-        );
+        _navigateToHome();
       }
-    });
+    } catch (e) {
+      debugPrint('❌ Preload error: $e');
+      // Naviguer quand même après un délai minimum
+      if (mounted) {
+        Future.delayed(const Duration(milliseconds: 2000), () {
+          if (mounted) {
+            _navigateToHome();
+          }
+        });
+      }
+    }
+  }
+
+  /// Navigue vers l'écran principal
+  void _navigateToHome() {
+    if (!mounted) return;
+
+    Navigator.of(context).pushReplacement(
+      PageRouteBuilder(
+        pageBuilder: (context, animation, secondaryAnimation) =>
+            const AutoPlayListener(child: MainNavigation()),
+        transitionsBuilder: (context, animation, secondaryAnimation, child) {
+          return FadeTransition(opacity: animation, child: child);
+        },
+        transitionDuration: const Duration(milliseconds: 600),
+      ),
+    );
   }
 
   @override
