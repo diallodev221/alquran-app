@@ -992,74 +992,6 @@ class _SurahDetailScreenState extends ConsumerState<SurahDetailScreen>
               ],
             ),
 
-            // Sub-app bar avec info contextuelle améliorée - Responsive
-            SliverToBoxAdapter(
-              child: Container(
-                decoration: BoxDecoration(
-                  color: isDark ? AppColors.darkSurface : AppColors.deepBlue,
-                  border: Border(
-                    bottom: BorderSide(
-                      color: AppColors.pureWhite.withOpacity(0.1),
-                      width: 1,
-                    ),
-                  ),
-                ),
-                padding: EdgeInsets.symmetric(
-                  horizontal: ResponsiveUtils.adaptivePadding(
-                    context,
-                    mobile: 20.0,
-                    tablet: 32.0,
-                    desktop: 48.0,
-                  ),
-                  vertical: ResponsiveUtils.adaptivePadding(
-                    context,
-                    mobile: 10.0,
-                  ),
-                ),
-                child: Center(
-                  child: ConstrainedBox(
-                    constraints: BoxConstraints(
-                      maxWidth: ResponsiveUtils.maxContentWidth(context),
-                    ),
-                    child: Row(
-                      children: [
-                        Icon(
-                          Icons.info_outline,
-                          size: ResponsiveUtils.adaptiveIconSize(
-                            context,
-                            base: 14.0,
-                          ),
-                          color: AppColors.pureWhite.withOpacity(0.7),
-                        ),
-                        SizedBox(
-                          width: ResponsiveUtils.adaptivePadding(
-                            context,
-                            mobile: 8.0,
-                          ),
-                        ),
-                        Expanded(
-                          child: Text(
-                            _getContextualInfo(widget.surah.number),
-                            style: TextStyle(
-                              color: AppColors.pureWhite.withOpacity(0.85),
-                              fontSize: ResponsiveUtils.adaptiveFontSize(
-                                context,
-                                mobile: 12,
-                                tablet: 13,
-                                desktop: 14,
-                              ),
-                              fontWeight: FontWeight.w500,
-                              letterSpacing: 0.3,
-                            ),
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                ),
-              ),
-            ),
-
             // Header amélioré avec cercle et titre - Responsive
             SliverToBoxAdapter(
               child: Container(
@@ -1632,30 +1564,6 @@ class _SurahDetailScreenState extends ConsumerState<SurahDetailScreen>
         ),
       ),
     );
-  }
-
-  String _getContextualInfo(int surahNumber) {
-    // Simple calculation for Juz/Hizb/Page/Ruku
-    // This is a simplified version - in a real app, you'd have a proper mapping
-    int juz = 1;
-    int hizb = 1;
-    int page = 1;
-    int ruku = 1;
-
-    // Rough calculation (this should be replaced with proper data)
-    if (surahNumber <= 2) {
-      juz = 1;
-      hizb = 1;
-      page = 1;
-      ruku = 1;
-    } else if (surahNumber <= 5) {
-      juz = 1;
-      hizb = 1;
-      page = 2;
-      ruku = 2;
-    }
-
-    return 'Juz $juz, Hizb $hizb : Page $page : Ruku $ruku';
   }
 
   Widget _buildContinuousAyahsText(SurahDetailModel surahDetail, bool isDark) {

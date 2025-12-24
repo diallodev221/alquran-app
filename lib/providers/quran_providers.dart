@@ -1,5 +1,4 @@
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:connectivity_plus/connectivity_plus.dart';
 import '../services/quran_api_service.dart';
 import '../models/quran_models.dart';
 
@@ -45,20 +44,8 @@ final editionsProvider = FutureProvider<List<EditionModel>>((ref) async {
 final selectedEditionProvider = StateProvider<String>((ref) => 'quran-madinah');
 // final selectedEditionProvider = StateProvider<String>((ref) => 'fr.hamidullah');
 
-/// Provider pour vérifier la connectivité internet
-final connectivityProvider = StreamProvider<ConnectivityResult>((ref) {
-  return Connectivity().onConnectivityChanged;
-});
-
-/// Provider pour savoir si on est en ligne
-final isOnlineProvider = Provider<bool>((ref) {
-  final connectivity = ref.watch(connectivityProvider);
-  return connectivity.when(
-    data: (result) => result != ConnectivityResult.none,
-    loading: () => true,
-    error: (_, __) => false,
-  );
-});
+// Les providers de connectivité sont maintenant dans network_providers.dart
+// Utiliser isOnlineProvider et networkStatusProvider depuis network_providers.dart
 
 /// Provider pour la dernière sourate lue (numéro)
 final lastReadSurahProvider = StateProvider<int>((ref) => 2);
