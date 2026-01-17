@@ -41,9 +41,6 @@ dependencies:
   # Audio player pour la récitation du Quran
   just_audio: ^0.9.36
   
-  # State management et utilitaires
-  provider: ^6.1.1
-  
   # HTTP et API
   http: ^1.1.2
   dio: ^5.4.0
@@ -62,6 +59,17 @@ dependencies:
   
   # Animations fluides
   animations: ^2.0.11
+  
+  # Prayer times calculation
+  adhan_dart: ^1.0.0
+  
+  # Geolocation
+  geolocator: ^12.0.0
+  geocoding: ^3.0.0
+  
+  # Date utilities
+  intl: any
+  hijri_date_time: ^1.1.0
 
 dev_dependencies:
   flutter_test:

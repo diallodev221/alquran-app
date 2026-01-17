@@ -1,6 +1,7 @@
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../services/quran_api_service.dart';
 import '../models/quran_models.dart';
+import 'settings_providers.dart';
 
 /// Provider pour le service API
 final quranApiServiceProvider = Provider((ref) => QuranApiService());
@@ -17,9 +18,12 @@ final surahDetailProvider = FutureProvider.family<SurahDetailModel, int>((
   surahNumber,
 ) async {
   final apiService = ref.watch(quranApiServiceProvider);
+  final arabicScript = ref.watch(arabicScriptProvider);
+  final translationEdition = ref.watch(translationEditionProvider);
   return apiService.getSurahDetail(
     surahNumber,
-    translationEdition: 'fr.hamidullah', // Traduction française de Hamidullah
+    edition: arabicScript, // Utiliser le script sélectionné
+    translationEdition: translationEdition, // Utiliser la traduction sélectionnée
   );
 });
 
@@ -38,6 +42,15 @@ final searchResultsProvider = FutureProvider<List<AyahModel>>((ref) async {
 final editionsProvider = FutureProvider<List<EditionModel>>((ref) async {
   final apiService = ref.watch(quranApiServiceProvider);
   return apiService.getEditions();
+});
+
+/// Provider pour les éditions de script arabe disponibles (cached in memory)
+final arabicScriptEditionsProvider =
+    FutureProvider.autoDispose<List<EditionModel>>((ref) async {
+  final apiService = ref.watch(quranApiServiceProvider);
+  // Keep provider alive to cache data in memory
+  ref.keepAlive();
+  return apiService.getEditions(type: 'quran');
 });
 
 /// Provider pour l'édition sélectionnée (français par défaut)

@@ -5,6 +5,8 @@ import '../theme/app_theme.dart';
 import 'home_screen.dart';
 import 'favorites_screen.dart';
 import 'settings_screen.dart';
+import 'prayer_times_screen.dart';
+import 'today_screen.dart';
 
 class MainNavigation extends StatefulWidget {
   const MainNavigation({super.key});
@@ -90,23 +92,28 @@ class _MainNavigationState extends State<MainNavigation>
           ),
           items: [
             BottomNavigationBarItem(
-              icon: _buildNavIcon(Icons.menu_book_outlined, 0),
-              activeIcon: _buildNavIcon(Icons.menu_book, 0, isActive: true),
+              icon: _buildNavIcon(Icons.home_outlined, 0),
+              activeIcon: _buildNavIcon(Icons.home, 0, isActive: true),
+              label: 'Home',
+            ),
+            BottomNavigationBarItem(
+              icon: _buildNavIcon(Icons.access_time, 1),
+              activeIcon: _buildNavIcon(Icons.access_time, 1, isActive: true),
+              label: 'Prières',
+            ),
+            BottomNavigationBarItem(
+              icon: _buildNavIcon(Icons.menu_book_outlined, 2),
+              activeIcon: _buildNavIcon(Icons.menu_book, 2, isActive: true),
               label: 'Quran',
             ),
             BottomNavigationBarItem(
-              icon: _buildNavIcon(Icons.bookmark_border, 1),
-              activeIcon: _buildNavIcon(Icons.bookmark, 1, isActive: true),
+              icon: _buildNavIcon(Icons.bookmark_border, 3),
+              activeIcon: _buildNavIcon(Icons.bookmark, 3, isActive: true),
               label: 'Favoris',
             ),
             BottomNavigationBarItem(
-              icon: _buildNavIcon(Icons.search, 2),
-              activeIcon: _buildNavIcon(Icons.search, 2, isActive: true),
-              label: 'Recherche',
-            ),
-            BottomNavigationBarItem(
-              icon: _buildNavIcon(Icons.settings_outlined, 3),
-              activeIcon: _buildNavIcon(Icons.settings, 3, isActive: true),
+              icon: _buildNavIcon(Icons.settings_outlined, 4),
+              activeIcon: _buildNavIcon(Icons.settings, 4, isActive: true),
               label: 'Paramètres',
             ),
           ],
@@ -147,95 +154,17 @@ class _MainNavigationState extends State<MainNavigation>
   Widget _buildCurrentScreen() {
     switch (_currentIndex) {
       case 0:
-        return const HomeScreen();
+        return const TodayScreen();
       case 1:
-        return const FavoritesScreen();
+        return const PrayerTimesScreen();
       case 2:
-        return _buildPlaceholderScreen(
-          'Recherche',
-          Icons.search,
-          'Recherchez dans le Quran',
-        );
+        return const HomeScreen();
       case 3:
+        return const FavoritesScreen();
+      case 4:
         return const SettingsScreen();
       default:
-        return const HomeScreen();
+        return const TodayScreen();
     }
-  }
-
-  Widget _buildPlaceholderScreen(String title, IconData icon, String subtitle) {
-    final isDark = Theme.of(context).brightness == Brightness.dark;
-
-    return Scaffold(
-      body: Container(
-        decoration: BoxDecoration(
-          gradient: isDark
-              ? LinearGradient(
-                  colors: [AppColors.darkBackground, AppColors.darkSurface],
-                  begin: Alignment.topCenter,
-                  end: Alignment.bottomCenter,
-                )
-              : LinearGradient(
-                  colors: [AppColors.ivory, AppColors.pureWhite],
-                  begin: Alignment.topCenter,
-                  end: Alignment.bottomCenter,
-                ),
-        ),
-        child: SafeArea(
-          child: Center(
-            child: Column(
-              mainAxisAlignment: MainAxisAlignment.center,
-              children: [
-                Container(
-                  padding: const EdgeInsets.all(AppTheme.paddingXLarge),
-                  decoration: BoxDecoration(
-                    gradient: AppColors.goldAccent,
-                    shape: BoxShape.circle,
-                    boxShadow: AppColors.goldGlow,
-                  ),
-                  child: Icon(
-                    icon,
-                    size: 64,
-                    color: isDark
-                        ? AppColors.darkBackground
-                        : AppColors.deepBlue,
-                  ),
-                ),
-                const SizedBox(height: AppTheme.paddingLarge),
-                Text(title, style: Theme.of(context).textTheme.displaySmall),
-                const SizedBox(height: AppTheme.paddingSmall),
-                Text(
-                  subtitle,
-                  style: Theme.of(context).textTheme.bodyMedium,
-                  textAlign: TextAlign.center,
-                ),
-                const SizedBox(height: AppTheme.paddingXLarge),
-                Container(
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: AppTheme.paddingLarge,
-                    vertical: AppTheme.paddingSmall,
-                  ),
-                  decoration: BoxDecoration(
-                    color: AppColors.luxuryGold.withOpacity(0.1),
-                    borderRadius: BorderRadius.circular(20),
-                    border: Border.all(
-                      color: AppColors.luxuryGold.withOpacity(0.3),
-                    ),
-                  ),
-                  child: Text(
-                    'Bientôt disponible',
-                    style: TextStyle(
-                      fontSize: 12,
-                      fontWeight: FontWeight.w600,
-                      color: isDark ? AppColors.luxuryGold : AppColors.darkGold,
-                    ),
-                  ),
-                ),
-              ],
-            ),
-          ),
-        ),
-      ),
-    );
   }
 }

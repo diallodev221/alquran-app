@@ -15,6 +15,7 @@ import '../providers/audio_providers.dart';
 import '../utils/surah_adapter.dart';
 import '../utils/responsive_utils.dart';
 import 'surah_detail_screen.dart';
+import 'prayer_times_screen.dart';
 
 class HomeScreen extends ConsumerStatefulWidget {
   const HomeScreen({super.key});
@@ -124,10 +125,15 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
                       });
                     }
 
-                    return _buildContent(surahs, lastReadSurahNumber, isDark);
+                    return _buildContent(
+                      surahs,
+                      lastReadSurahNumber,
+                      isDark,
+                      currentPlayingSurah,
+                    );
                   },
                   loading: () => _buildLoadingState(isDark),
-                  error: (error, stack) => _buildErrorState(error),
+                  error: (error, _) => _buildErrorState(error),
                 ),
               ),
               // Espacement pour le mini player quand il est visible
@@ -151,6 +157,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
     List<Surah> surahs,
     int lastReadSurahNumber,
     bool isDark,
+    int? currentPlayingSurah,
   ) {
     final responsivePadding = ResponsiveUtils.adaptivePadding(
       context,
@@ -252,6 +259,27 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
                           IconButton(
                             onPressed: () {
                               HapticFeedback.lightImpact();
+                              Navigator.push(
+                                context,
+                                MaterialPageRoute(
+                                  builder: (context) =>
+                                      const PrayerTimesScreen(),
+                                ),
+                              );
+                            },
+                            icon: Icon(
+                              Icons.access_time,
+                              color: AppColors.luxuryGold,
+                            ),
+                            iconSize: ResponsiveUtils.adaptiveIconSize(
+                              context,
+                              base: 24,
+                            ),
+                            tooltip: 'Horaires de prières',
+                          ),
+                          IconButton(
+                            onPressed: () {
+                              HapticFeedback.lightImpact();
                               // Toggle theme
                             },
                             icon: Icon(
@@ -288,8 +316,8 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
 
                   const SizedBox(height: AppTheme.paddingLarge),
 
-                  // Section "Reprendre la lecture" si applicable
-                  if (lastReadSurahNumber > 0)
+                  // Section "Reprendre la lecture" si applicable (exclure Baqara)
+                  if (lastReadSurahNumber > 0 && lastReadSurahNumber != 2)
                     _buildResumeReading(surahs, lastReadSurahNumber, isDark),
 
                   const SizedBox(height: AppTheme.paddingLarge),
@@ -347,7 +375,10 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
                   ).animate(_fadeAnimation),
                   child: SurahCard(
                     surah: surah,
-                    isLastRead: surah.number == lastReadSurahNumber,
+                    isLastRead:
+                        surah.number == lastReadSurahNumber &&
+                        surah.number != 2,
+                    isCurrentlyPlaying: surah.number == currentPlayingSurah,
                     onTap: () => _navigateToSurah(surah),
                   ),
                 ),
