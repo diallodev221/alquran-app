@@ -4,17 +4,20 @@ import '../theme/app_colors.dart';
 import '../theme/app_theme.dart';
 import '../models/surah.dart';
 import '../providers/favorites_providers.dart';
+import '../providers/audio_providers.dart';
 
 class SurahCard extends ConsumerStatefulWidget {
   final Surah surah;
   final VoidCallback onTap;
   final bool isLastRead;
+  final bool isCurrentlyPlaying;
 
   const SurahCard({
     super.key,
     required this.surah,
     required this.onTap,
     this.isLastRead = false,
+    this.isCurrentlyPlaying = false,
   });
 
   @override
@@ -52,6 +55,10 @@ class _SurahCardState extends ConsumerState<SurahCard>
     // Vérifier si cette sourate est en favori
     final isFavorite = ref.watch(isSurahFavoriteProvider(widget.surah.number));
 
+    // Vérifier si l'audio est en cours de lecture
+    final isAudioPlaying = ref.watch(isAudioPlayingProvider);
+    final isCurrentlyPlaying = widget.isCurrentlyPlaying && isAudioPlaying;
+
     return GestureDetector(
       onTapDown: (_) {
         _controller.forward();
@@ -80,6 +87,8 @@ class _SurahCardState extends ConsumerState<SurahCard>
                     ? AppColors.cardShadowHover
                     : AppColors.cardShadow,
                 border: widget.isLastRead
+                    ? Border.all(color: AppColors.luxuryGold, width: 2)
+                    : isCurrentlyPlaying
                     ? Border.all(color: AppColors.luxuryGold, width: 2)
                     : null,
               ),
@@ -128,8 +137,64 @@ class _SurahCardState extends ConsumerState<SurahCard>
                       ),
                     ),
 
-                  // Indicateur de favori (à gauche si pas "dernière lecture")
-                  if (isFavorite && !widget.isLastRead)
+                  // Badge "En lecture" si la sourate est actuellement jouée
+                  if (isCurrentlyPlaying && !widget.isLastRead)
+                    Positioned(
+                      top: 0,
+                      right: 0,
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 12,
+                          vertical: 6,
+                        ),
+                        decoration: BoxDecoration(
+                          gradient: LinearGradient(
+                            colors: [
+                              AppColors.luxuryGold,
+                              AppColors.luxuryGold.withOpacity(0.8),
+                            ],
+                          ),
+                          borderRadius: const BorderRadius.only(
+                            topRight: Radius.circular(AppTheme.radiusMedium),
+                            bottomLeft: Radius.circular(AppTheme.radiusMedium),
+                          ),
+                          boxShadow: [
+                            BoxShadow(
+                              color: AppColors.luxuryGold.withOpacity(0.4),
+                              blurRadius: 8,
+                              spreadRadius: 1,
+                              offset: const Offset(0, 2),
+                            ),
+                          ],
+                        ),
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Icon(
+                              Icons.graphic_eq,
+                              size: 14,
+                              color: isDark
+                                  ? AppColors.darkBackground
+                                  : AppColors.pureWhite,
+                            ),
+                            const SizedBox(width: 4),
+                            Text(
+                              'En lecture',
+                              style: TextStyle(
+                                fontSize: 11,
+                                fontWeight: FontWeight.w600,
+                                color: isDark
+                                    ? AppColors.darkBackground
+                                    : AppColors.pureWhite,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+
+                  // Indicateur de favori (à gauche si pas "dernière lecture" et pas "en lecture")
+                  if (isFavorite && !widget.isLastRead && !isCurrentlyPlaying)
                     Positioned(
                       top: 8,
                       right: 8,

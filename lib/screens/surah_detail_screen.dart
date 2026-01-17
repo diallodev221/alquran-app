@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -8,10 +9,14 @@ import '../models/quran_models.dart';
 import '../providers/quran_providers.dart';
 import '../providers/audio_providers.dart';
 import '../providers/favorites_providers.dart';
+import '../providers/settings_providers.dart';
+import '../services/audio_service.dart';
 import '../utils/responsive_utils.dart';
 import '../utils/surah_adapter.dart';
 import '../services/preload_service.dart';
 import '../services/settings_service.dart';
+import '../utils/available_translations.dart';
+import '../utils/juz_utils.dart';
 
 class SurahDetailScreen extends ConsumerStatefulWidget {
   final Surah surah;
@@ -48,6 +53,12 @@ class _SurahDetailScreenState extends ConsumerState<SurahDetailScreen>
   bool _shouldAutoScroll = true; // Autoriser l'auto-scroll
   bool _hasAutoPlayed = false; // Flag pour éviter les auto-plays multiples
   int? _lastHandledNextSurah; // Dernière sourate suivante traitée
+  bool _isAutoScrollEnabled = true; // État du toggle auto-scroll dans l'UI
+  Timer? _continuousScrollTimer; // Timer pour le scroll continu
+  bool _isContinuousScrolling = false; // Flag pour le scroll continu
+  bool _showBottomBar = true; // Afficher/masquer la barre audio en bas
+  Timer? _hideBottomBarTimer; // Timer pour masquer la barre après 2s
+  Timer? _scrollStopTimer; // Timer pour masquer la barre après arrêt du scroll
 
   @override
   void initState() {
@@ -94,6 +105,7 @@ class _SurahDetailScreenState extends ConsumerState<SurahDetailScreen>
   void dispose() {
     _animationController.dispose();
     _scrollController.dispose();
+    _continuousScrollTimer?.cancel();
     super.dispose();
   }
 
@@ -104,9 +116,36 @@ class _SurahDetailScreenState extends ConsumerState<SurahDetailScreen>
       setState(() => _showScrollToTop = shouldShow);
     }
 
+    // Afficher la barre audio lors du scroll
+    if (!_showBottomBar) {
+      setState(() => _showBottomBar = true);
+    }
+
+    // Annuler le timer de masquage après arrêt du scroll
+    _scrollStopTimer?.cancel();
+    _hideBottomBarTimer?.cancel();
+
+    // Programmer le masquage après arrêt du scroll (1 seconde d'inactivité)
+    // Mais seulement si l'audio n'est pas en lecture
+    _scrollStopTimer = Timer(const Duration(seconds: 1), () {
+      if (mounted && !_isContinuousScrolling) {
+        final currentSurah = ref.read(currentPlayingSurahProvider);
+        final isAudioPlaying = ref.read(isAudioPlayingProvider);
+        final isThisSurahPlaying = currentSurah == widget.surah.number;
+
+        // Ne masquer que si l'audio n'est pas en lecture
+        // Sinon, le timer de 2 secondes après le démarrage de l'audio s'en chargera
+        if (!isThisSurahPlaying || !isAudioPlaying) {
+          setState(() => _showBottomBar = false);
+        }
+      }
+    });
+
     // Détecter le scroll manuel (pas d'auto-scroll en cours)
-    if (!_isAutoScrolling) {
+    if (!_isAutoScrolling && !_isContinuousScrolling) {
       _lastManualScroll = DateTime.now();
+      // Arrêter le scroll continu si l'utilisateur scroll manuellement
+      _stopContinuousScroll();
       // Désactiver l'auto-scroll temporairement après un scroll manuel
       _shouldAutoScroll = false;
       // Réactiver après 3 secondes
@@ -116,6 +155,51 @@ class _SurahDetailScreenState extends ConsumerState<SurahDetailScreen>
         }
       });
     }
+  }
+
+  /// Démarrer le scroll continu et fluide
+  void _startContinuousScroll() {
+    if (_isContinuousScrolling || !_scrollController.hasClients) return;
+
+    _isContinuousScrolling = true;
+
+    // Vitesse de scroll : pixels par seconde (ajustable pour plus de lenteur)
+    const double scrollSpeed = 15.0; // Pixels par seconde - très lent et fluide
+
+    _continuousScrollTimer?.cancel();
+    _continuousScrollTimer = Timer.periodic(const Duration(milliseconds: 50), (
+      timer,
+    ) {
+      if (!mounted || !_scrollController.hasClients) {
+        timer.cancel();
+        return;
+      }
+
+      final currentPosition = _scrollController.offset;
+      final maxPosition = _scrollController.position.maxScrollExtent;
+
+      // Si on a atteint le bas, arrêter le scroll
+      if (currentPosition >= maxPosition) {
+        _stopContinuousScroll();
+        return;
+      }
+
+      // Calculer le nouveau offset avec une vitesse constante
+      final newOffset = (currentPosition + (scrollSpeed * 0.05)).clamp(
+        0.0,
+        maxPosition,
+      );
+
+      // Scroller de manière fluide
+      _scrollController.jumpTo(newOffset);
+    });
+  }
+
+  /// Arrêter le scroll continu
+  void _stopContinuousScroll() {
+    _isContinuousScrolling = false;
+    _continuousScrollTimer?.cancel();
+    _continuousScrollTimer = null;
   }
 
   void _scrollToTop() {
@@ -553,6 +637,26 @@ class _SurahDetailScreenState extends ConsumerState<SurahDetailScreen>
     final isAudioPlaying = ref.watch(isAudioPlayingProvider);
     final isThisSurahPlaying = currentPlayingSurah == widget.surah.number;
 
+    // Masquer la barre audio après 2 secondes si l'audio est en lecture
+    // Mais garder la barre visible pendant le scroll continu
+    if (isThisSurahPlaying && isAudioPlaying && !_isContinuousScrolling) {
+      _hideBottomBarTimer?.cancel();
+      _hideBottomBarTimer = Timer(const Duration(seconds: 2), () {
+        if (mounted && !_isContinuousScrolling) {
+          setState(() => _showBottomBar = false);
+        }
+      });
+    } else if (!isThisSurahPlaying || !isAudioPlaying) {
+      // Afficher la barre si l'audio n'est pas en lecture
+      _hideBottomBarTimer?.cancel();
+      if (!_showBottomBar) {
+        setState(() => _showBottomBar = true);
+      }
+    } else if (_isContinuousScrolling && !_showBottomBar) {
+      // Afficher la barre pendant le scroll continu
+      setState(() => _showBottomBar = true);
+    }
+
     // Observer la demande de lecture de la sourate suivante (auto-play)
     final shouldPlayNextSurah = ref.watch(shouldPlayNextSurahProvider);
 
@@ -572,24 +676,24 @@ class _SurahDetailScreenState extends ConsumerState<SurahDetailScreen>
               _currentAyahIndex = newAyahIndex;
             });
 
-            // Auto-scroll vers l'ayah en cours si l'audio est en lecture
-            // Seulement si l'auto-scroll est autorisé et pas de scroll manuel récent
+            // Auto-scroll continu si l'audio est en lecture et auto-scroll activé
             if (isAudioPlaying &&
-                !_isAutoScrolling &&
                 _shouldAutoScroll &&
+                _isAutoScrollEnabled &&
                 (_lastManualScroll == null ||
                     DateTime.now().difference(_lastManualScroll!).inSeconds >
                         2)) {
-              surahDetailAsync.whenData((surahDetail) {
-                if (newAyahIndex >= 0 &&
-                    newAyahIndex < surahDetail.numberOfAyahs) {
-                  Future.delayed(const Duration(milliseconds: 500), () {
-                    if (mounted && !_isAutoScrolling && _shouldAutoScroll) {
-                      _scrollToAyah(newAyahIndex, isAudioAutoScroll: true);
-                    }
-                  });
+              // Démarrer le scroll continu et fluide
+              Future.delayed(const Duration(milliseconds: 500), () {
+                if (mounted && _shouldAutoScroll && _isAutoScrollEnabled) {
+                  _startContinuousScroll();
                 }
               });
+            } else if (!isAudioPlaying ||
+                !_shouldAutoScroll ||
+                !_isAutoScrollEnabled) {
+              // Arrêter le scroll continu si l'audio s'arrête ou auto-scroll désactivé
+              _stopContinuousScroll();
             }
           }
         });
@@ -601,8 +705,30 @@ class _SurahDetailScreenState extends ConsumerState<SurahDetailScreen>
           setState(() {
             _currentAyahIndex = -1;
           });
+          // Arrêter le scroll continu quand on change de sourate
+          _stopContinuousScroll();
         }
       });
+    }
+
+    // Gérer le scroll continu selon l'état de lecture
+    if (isThisSurahPlaying &&
+        isAudioPlaying &&
+        _isAutoScrollEnabled &&
+        _shouldAutoScroll) {
+      // S'assurer que le scroll continu est actif
+      if (!_isContinuousScrolling && _scrollController.hasClients) {
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (mounted && _isAutoScrollEnabled && _shouldAutoScroll) {
+            _startContinuousScroll();
+          }
+        });
+      }
+    } else {
+      // Arrêter le scroll continu si l'audio s'arrête ou auto-scroll désactivé
+      if (_isContinuousScrolling) {
+        _stopContinuousScroll();
+      }
     }
 
     // Si autoPlay est activé, démarrer automatiquement la lecture
@@ -856,115 +982,13 @@ class _SurahDetailScreenState extends ConsumerState<SurahDetailScreen>
               ),
               centerTitle: true,
               actions: [
-                // Translation toggle - Responsive
-                Material(
-                  color: Colors.transparent,
-                  child: InkWell(
-                    onTap: () {
-                      HapticFeedback.lightImpact();
-                      setState(() {
-                        _showTranslation = !_showTranslation;
-                      });
-                    },
-                    borderRadius: BorderRadius.circular(24),
-                    child: Container(
-                      margin: EdgeInsets.all(
-                        ResponsiveUtils.adaptivePadding(context, mobile: 8.0),
-                      ),
-                      padding: EdgeInsets.symmetric(
-                        horizontal: ResponsiveUtils.adaptivePadding(
-                          context,
-                          mobile: 12.0,
-                          tablet: 14.0,
-                          desktop: 16.0,
-                        ),
-                        vertical: ResponsiveUtils.adaptivePadding(
-                          context,
-                          mobile: 8.0,
-                        ),
-                      ),
-                      decoration: BoxDecoration(
-                        color: _showTranslation
-                            ? AppColors.luxuryGold.withOpacity(0.25)
-                            : AppColors.pureWhite.withOpacity(0.1),
-                        borderRadius: BorderRadius.circular(20),
-                        border: Border.all(
-                          color: _showTranslation
-                              ? AppColors.luxuryGold.withOpacity(0.5)
-                              : Colors.transparent,
-                          width: 1,
-                        ),
-                      ),
-                      child: Row(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          Icon(
-                            _showTranslation
-                                ? Icons.translate
-                                : Icons.translate_outlined,
-                            color: _showTranslation
-                                ? AppColors.luxuryGold
-                                : AppColors.pureWhite,
-                            size: ResponsiveUtils.adaptiveIconSize(
-                              context,
-                              base: 18.0,
-                            ),
-                          ),
-                          if (_showTranslation) ...[
-                            SizedBox(
-                              width: ResponsiveUtils.adaptivePadding(
-                                context,
-                                mobile: 4.0,
-                              ),
-                            ),
-                            Text(
-                              'FR',
-                              style: TextStyle(
-                                color: AppColors.luxuryGold,
-                                fontSize: ResponsiveUtils.adaptiveFontSize(
-                                  context,
-                                  mobile: 11,
-                                  tablet: 12,
-                                  desktop: 13,
-                                ),
-                                fontWeight: FontWeight.w600,
-                              ),
-                            ),
-                          ],
-                        ],
-                      ),
-                    ),
-                  ),
-                ),
                 // Settings icon - Responsive
                 Material(
                   color: Colors.transparent,
                   child: InkWell(
                     onTap: () {
                       HapticFeedback.lightImpact();
-                      showDialog(
-                        context: context,
-                        builder: (context) => AlertDialog(
-                          shape: RoundedRectangleBorder(
-                            borderRadius: BorderRadius.circular(
-                              ResponsiveUtils.adaptiveBorderRadius(
-                                context,
-                                base: 20.0,
-                              ),
-                            ),
-                          ),
-                          title: const Text('Settings'),
-                          content: const Text(
-                            'Settings options will be available here.',
-                          ),
-                          actions: [
-                            TextButton(
-                              onPressed: () => Navigator.pop(context),
-                              child: const Text('Close'),
-                            ),
-                          ],
-                        ),
-                      );
+                      _showSettingsPanel(isDark);
                     },
                     borderRadius: BorderRadius.circular(24),
                     child: Container(
@@ -976,7 +1000,7 @@ class _SurahDetailScreenState extends ConsumerState<SurahDetailScreen>
                         shape: BoxShape.circle,
                       ),
                       child: Icon(
-                        Icons.tune,
+                        Icons.settings_rounded,
                         color: AppColors.pureWhite,
                         size: ResponsiveUtils.adaptiveIconSize(
                           context,
@@ -992,210 +1016,70 @@ class _SurahDetailScreenState extends ConsumerState<SurahDetailScreen>
               ],
             ),
 
-            // Header amélioré avec cercle et titre - Responsive
+            // Header simplifié avec barre décorative - Style image
             SliverToBoxAdapter(
               child: Container(
                 decoration: BoxDecoration(
                   color: isDark
                       ? AppColors.darkBackground
                       : AppColors.pureWhite,
-                  border: Border(
-                    bottom: BorderSide(
-                      color: isDark
-                          ? AppColors.pureWhite.withOpacity(0.05)
-                          : AppColors.deepBlue.withOpacity(0.1),
-                      width: 1,
-                    ),
-                  ),
                 ),
-                padding: EdgeInsets.symmetric(
-                  vertical: ResponsiveUtils.adaptivePadding(
-                    context,
-                    mobile: 40.0,
-                    tablet: 48.0,
-                    desktop: 56.0,
-                  ),
-                ),
-                child: Center(
-                  child: ConstrainedBox(
-                    constraints: BoxConstraints(
-                      maxWidth: ResponsiveUtils.maxContentWidth(context),
-                    ),
-                    child: Column(
-                      children: [
-                        // Cercle avec numéro de surah amélioré - Responsive
-                        Container(
-                          width: ResponsiveUtils.responsive(
-                            context,
-                            mobile: 90.0,
-                            tablet: 110.0,
-                            desktop: 130.0,
-                          ),
-                          height: ResponsiveUtils.responsive(
-                            context,
-                            mobile: 90.0,
-                            tablet: 110.0,
-                            desktop: 130.0,
-                          ),
-                          decoration: BoxDecoration(
-                            gradient: LinearGradient(
-                              begin: Alignment.topLeft,
-                              end: Alignment.bottomRight,
-                              colors: [
-                                AppColors.deepBlue,
-                                AppColors.deepBlue.withOpacity(0.8),
-                              ],
-                            ),
-                            shape: BoxShape.circle,
-                            boxShadow: [
-                              BoxShadow(
-                                color: AppColors.deepBlue.withOpacity(0.3),
-                                blurRadius: ResponsiveUtils.responsive(
-                                  context,
-                                  mobile: 20.0,
-                                  tablet: 24.0,
-                                  desktop: 28.0,
-                                ),
-                                spreadRadius: 2,
-                                offset: const Offset(0, 4),
-                              ),
-                            ],
-                          ),
-                          child: Center(
-                            child: Text(
-                              '${widget.surah.number}',
-                              style: TextStyle(
-                                color: AppColors.pureWhite,
-                                fontSize: ResponsiveUtils.adaptiveFontSize(
-                                  context,
-                                  mobile: 36,
-                                  tablet: 44,
-                                  desktop: 52,
-                                ),
-                                fontWeight: FontWeight.bold,
-                                letterSpacing: 1,
-                              ),
-                            ),
-                          ),
+                child: Column(
+                  children: [
+                    // Barre décorative avec nom arabe - Style image
+                    Container(
+                      width: double.infinity,
+                      padding: EdgeInsets.symmetric(
+                        vertical: ResponsiveUtils.adaptivePadding(
+                          context,
+                          mobile: 16.0,
+                          tablet: 20.0,
+                          desktop: 24.0,
                         ),
-                        SizedBox(
-                          height: ResponsiveUtils.adaptivePadding(
-                            context,
-                            mobile: 20.0,
-                            tablet: 24.0,
-                            desktop: 28.0,
-                          ),
+                      ),
+                      decoration: BoxDecoration(
+                        gradient: LinearGradient(
+                          colors: isDark
+                              ? [
+                                  AppColors.deepBlue.withOpacity(0.9),
+                                  AppColors.deepBlue.withOpacity(0.7),
+                                ]
+                              : [
+                                  AppColors.deepBlue,
+                                  AppColors.deepBlue.withOpacity(0.85),
+                                ],
                         ),
-                        // Titre arabe
-                        Text(
+                      ),
+                      child: Center(
+                        child: Text(
                           widget.surah.arabicName,
                           style: TextStyle(
                             fontFamily: 'Cairo',
                             fontSize: ResponsiveUtils.adaptiveFontSize(
                               context,
-                              mobile: 32,
-                              tablet: 38,
-                              desktop: 44,
+                              mobile: 28,
+                              tablet: 32,
+                              desktop: 36,
                             ),
                             fontWeight: FontWeight.bold,
-                            color: isDark
-                                ? AppColors.luxuryGold
-                                : AppColors.deepBlue,
+                            color: AppColors.pureWhite,
                             height: 1.4,
                           ),
                           textAlign: TextAlign.center,
                           textDirection: TextDirection.rtl,
                         ),
-                        SizedBox(
-                          height: ResponsiveUtils.adaptivePadding(
-                            context,
-                            mobile: 12.0,
-                          ),
-                        ),
-                        // Titre français
-                        Text(
-                          widget.surah.name,
-                          style: TextStyle(
-                            fontSize: ResponsiveUtils.adaptiveFontSize(
-                              context,
-                              mobile: 22,
-                              tablet: 26,
-                              desktop: 30,
-                            ),
-                            fontWeight: FontWeight.w600,
-                            color: isDark
-                                ? AppColors.pureWhite
-                                : AppColors.deepBlue,
-                            letterSpacing: 0.5,
-                          ),
-                        ),
-                        SizedBox(
-                          height: ResponsiveUtils.adaptivePadding(
-                            context,
-                            mobile: 6.0,
-                          ),
-                        ),
-                        // Traduction
-                        Text(
-                          widget.surah.meaning,
-                          style: TextStyle(
-                            fontSize: ResponsiveUtils.adaptiveFontSize(
-                              context,
-                              mobile: 15,
-                              tablet: 17,
-                              desktop: 19,
-                            ),
-                            color: isDark
-                                ? AppColors.pureWhite.withOpacity(0.7)
-                                : AppColors.textSecondary,
-                            fontStyle: FontStyle.italic,
-                          ),
-                        ),
-                      ],
+                      ),
                     ),
-                  ),
-                ),
-              ),
-            ),
-
-            // Bouton pour ouvrir le lecteur audio (remplace le player inline)
-            SliverToBoxAdapter(
-              child: Container(
-                color: isDark ? AppColors.darkBackground : AppColors.pureWhite,
-                padding: EdgeInsets.symmetric(
-                  horizontal: ResponsiveUtils.adaptivePadding(
-                    context,
-                    mobile: AppTheme.paddingMedium,
-                    tablet: 32.0,
-                    desktop: 48.0,
-                  ),
-                  vertical: ResponsiveUtils.adaptivePadding(
-                    context,
-                    mobile: AppTheme.paddingMedium,
-                    tablet: 24.0,
-                    desktop: 32.0,
-                  ),
-                ),
-                child: Center(
-                  child: ConstrainedBox(
-                    constraints: BoxConstraints(
-                      maxWidth: ResponsiveUtils.maxContentWidth(context),
+                    // Espacement minimal
+                    SizedBox(
+                      height: ResponsiveUtils.adaptivePadding(
+                        context,
+                        mobile: 24.0,
+                        tablet: 28.0,
+                        desktop: 32.0,
+                      ),
                     ),
-                    child: audioUrlsAsync.when(
-                      data: (audioUrls) {
-                        if (audioUrls.isEmpty) {
-                          return _buildNoAudioCard(isDark);
-                        }
-                        return _buildAudioPlayerButton(
-                          isDark,
-                          audioUrls,
-                          surahDetail.numberOfAyahs,
-                        );
-                      },
-                      loading: () => _buildAudioLoadingCard(isDark),
-                      error: (error, stack) => _buildAudioErrorCard(isDark),
-                    ),
-                  ),
+                  ],
                 ),
               ),
             ),
@@ -1622,28 +1506,34 @@ class _SurahDetailScreenState extends ConsumerState<SurahDetailScreen>
                 width: 1.5,
               ),
             ),
-            child: Text(
-              bismillah,
-              style: TextStyle(
-                fontFamily: 'Cairo',
-                fontSize: ResponsiveUtils.adaptiveFontSize(
+            child: Consumer(
+              builder: (context, ref, child) {
+                final baseFontSize = ref.watch(arabicFontSizeProvider);
+                final bismillahFontSize = ResponsiveUtils.adaptiveFontSize(
                   context,
-                  mobile: 30,
-                  tablet: 36,
-                  desktop: 42,
-                ),
-                height: 2.2,
-                fontWeight: FontWeight.w700,
-                color: isDark ? AppColors.luxuryGold : AppColors.deepBlue,
-                letterSpacing: ResponsiveUtils.responsive(
-                  context,
-                  mobile: 2.0,
-                  tablet: 3.0,
-                  desktop: 4.0,
-                ),
-              ),
-              textAlign: TextAlign.center,
-              textDirection: TextDirection.rtl,
+                  mobile: baseFontSize * 1.07,
+                  tablet: baseFontSize * 1.29,
+                  desktop: baseFontSize * 1.5,
+                );
+                return Text(
+                  bismillah,
+                  style: TextStyle(
+                    fontFamily: 'Cairo',
+                    fontSize: bismillahFontSize,
+                    height: 2.2,
+                    fontWeight: FontWeight.w700,
+                    color: isDark ? AppColors.luxuryGold : AppColors.deepBlue,
+                    letterSpacing: ResponsiveUtils.responsive(
+                      context,
+                      mobile: 2.0,
+                      tablet: 3.0,
+                      desktop: 4.0,
+                    ),
+                  ),
+                  textAlign: TextAlign.center,
+                  textDirection: TextDirection.rtl,
+                );
+              },
             ),
           ),
         ],
@@ -1937,6 +1827,16 @@ class _SurahDetailScreenState extends ConsumerState<SurahDetailScreen>
     final currentPlayingSurah = ref.read(currentPlayingSurahProvider);
     final isAudioPlaying = ref.read(isAudioPlayingProvider);
     final isThisSurahPlaying = currentPlayingSurah == widget.surah.number;
+    // Utiliser la taille de police dynamique depuis les paramètres
+    final baseFontSize = ref.read(arabicFontSizeProvider);
+    final fontSize = ResponsiveUtils.adaptiveFontSize(
+      context,
+      mobile: baseFontSize,
+      tablet: baseFontSize * 1.2,
+      desktop: baseFontSize * 1.4,
+    );
+    // Vérifier si le highlight des ayahs est activé
+    final highlightAyah = ref.read(highlightAyahProvider);
 
     for (int i = 0; i < surahDetail.ayahs.length; i++) {
       final ayah = surahDetail.ayahs[i];
@@ -1944,6 +1844,8 @@ class _SurahDetailScreenState extends ConsumerState<SurahDetailScreen>
       final isPlaying =
           isThisSurahPlaying && _currentAyahIndex == i && isAudioPlaying;
       final isActive = isHighlighted || isPlaying;
+      // Si highlight ayah est activé, tous les ayahs sont mis en surbrillance
+      final shouldHighlight = highlightAyah || isActive;
 
       // Texte arabe de l'ayah - Responsive avec animation améliorée
       spans.add(
@@ -1951,28 +1853,25 @@ class _SurahDetailScreenState extends ConsumerState<SurahDetailScreen>
           text: '${ayah.text} ',
           style: TextStyle(
             fontFamily: 'Cairo',
-            fontSize: ResponsiveUtils.adaptiveFontSize(
-              context,
-              mobile: 28,
-              tablet: 34,
-              desktop: 40,
-            ),
+            fontSize: fontSize,
             height: ResponsiveUtils.responsive(
               context,
               mobile: 2.0,
               tablet: 2.2,
               desktop: 2.4,
             ),
-            fontWeight: isActive ? FontWeight.w700 : FontWeight.w600,
-            color: isActive
+            fontWeight: shouldHighlight ? FontWeight.w700 : FontWeight.w600,
+            color: shouldHighlight
                 ? AppColors.luxuryGold
                 : (isDark ? AppColors.pureWhite : AppColors.textPrimary),
             backgroundColor: isPlaying
                 ? AppColors.luxuryGold.withOpacity(0.2)
                 : isHighlighted
                 ? AppColors.luxuryGold.withOpacity(0.25)
+                : highlightAyah
+                ? AppColors.luxuryGold.withOpacity(0.15)
                 : null,
-            shadows: isActive
+            shadows: shouldHighlight
                 ? [
                     Shadow(
                       color: AppColors.luxuryGold.withOpacity(0.6),
@@ -2227,240 +2126,6 @@ class _SurahDetailScreenState extends ConsumerState<SurahDetailScreen>
     );
   }
 
-  Widget _buildNoAudioCard(bool isDark) {
-    return Container(
-      padding: const EdgeInsets.all(AppTheme.paddingLarge),
-      decoration: BoxDecoration(
-        color: isDark ? AppColors.darkCard : AppColors.pureWhite,
-        borderRadius: BorderRadius.circular(AppTheme.radiusLarge),
-        border: Border.all(color: AppColors.warning.withOpacity(0.3)),
-      ),
-      child: Row(
-        children: [
-          const Icon(Icons.volume_off, color: AppColors.warning, size: 32),
-          const SizedBox(width: AppTheme.paddingMedium),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  'Audio non disponible',
-                  style: Theme.of(context).textTheme.titleMedium,
-                ),
-                const SizedBox(height: 4),
-                Text(
-                  'L\'audio pour cette sourate n\'est pas disponible',
-                  style: Theme.of(context).textTheme.bodySmall,
-                ),
-              ],
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildAudioLoadingCard(bool isDark) {
-    return Container(
-      padding: const EdgeInsets.all(AppTheme.paddingLarge),
-      decoration: BoxDecoration(
-        gradient: isDark
-            ? LinearGradient(
-                colors: [
-                  AppColors.darkCard,
-                  AppColors.darkCard.withOpacity(0.95),
-                ],
-              )
-            : AppColors.headerGradient,
-        borderRadius: BorderRadius.circular(AppTheme.radiusLarge),
-      ),
-      child: Row(
-        children: [
-          const SizedBox(
-            width: 24,
-            height: 24,
-            child: CircularProgressIndicator(
-              strokeWidth: 2,
-              valueColor: AlwaysStoppedAnimation<Color>(AppColors.luxuryGold),
-            ),
-          ),
-          const SizedBox(width: AppTheme.paddingMedium),
-          Text(
-            'Chargement de l\'audio...',
-            style: TextStyle(
-              color: AppColors.pureWhite.withOpacity(0.9),
-              fontSize: 14,
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildAudioErrorCard(bool isDark) {
-    return Container(
-      padding: const EdgeInsets.all(AppTheme.paddingMedium),
-      decoration: BoxDecoration(
-        color: isDark ? AppColors.darkCard : AppColors.pureWhite,
-        borderRadius: BorderRadius.circular(AppTheme.radiusLarge),
-        border: Border.all(color: AppColors.error.withOpacity(0.3)),
-      ),
-      child: Row(
-        children: [
-          const Icon(Icons.error_outline, color: AppColors.error, size: 24),
-          const SizedBox(width: AppTheme.paddingMedium),
-          Expanded(
-            child: Text(
-              'Erreur de chargement audio',
-              style: Theme.of(context).textTheme.bodyMedium,
-            ),
-          ),
-          TextButton(
-            onPressed: () {
-              ref.invalidate(surahAudioUrlsProvider(widget.surah.number));
-            },
-            child: const Text('Réessayer'),
-          ),
-        ],
-      ),
-    );
-  }
-
-  /// Bouton pour ouvrir le lecteur audio
-  Widget _buildAudioPlayerButton(
-    bool isDark,
-    List<String> audioUrls,
-    int totalAyahs,
-  ) {
-    final isAudioPlaying = ref.watch(isAudioPlayingProvider);
-    final currentSurah = ref.watch(currentPlayingSurahProvider);
-    final isThisSurahPlaying = currentSurah == widget.surah.number;
-    final playlistService = ref.read(globalAudioPlaylistServiceProvider);
-
-    return Material(
-      color: Colors.transparent,
-      child: InkWell(
-        onTap: () async {
-          HapticFeedback.lightImpact();
-
-          // Si cette sourate n'est pas en cours de lecture, charger et démarrer
-          if (!isThisSurahPlaying) {
-            try {
-              await playlistService.loadSurahPlaylist(audioUrls);
-              // Mettre à jour les providers
-              ref.read(currentPlayingSurahProvider.notifier).state =
-                  widget.surah.number;
-              ref.read(currentPlayingSurahNameProvider.notifier).state =
-                  widget.surah.name;
-              ref.read(currentSurahTotalAyahsProvider.notifier).state =
-                  totalAyahs;
-              // Démarrer la lecture
-              await playlistService.play();
-            } catch (e) {
-              debugPrint('Error starting playback: $e');
-              if (mounted) {
-                ScaffoldMessenger.of(context).showSnackBar(
-                  SnackBar(
-                    content: Text('Erreur de démarrage: $e'),
-                    backgroundColor: AppColors.error,
-                  ),
-                );
-              }
-            }
-          } else {
-            // Si déjà en cours, toggle play/pause
-            if (isAudioPlaying) {
-              playlistService.pause();
-            } else {
-              playlistService.play();
-            }
-          }
-        },
-        borderRadius: BorderRadius.circular(
-          ResponsiveUtils.adaptiveBorderRadius(context, base: 16.0),
-        ),
-        child: Container(
-          padding: EdgeInsets.all(
-            ResponsiveUtils.adaptivePadding(
-              context,
-              mobile: 16.0,
-              tablet: 20.0,
-              desktop: 24.0,
-            ),
-          ),
-          decoration: BoxDecoration(
-            gradient: LinearGradient(
-              colors: isThisSurahPlaying && isAudioPlaying
-                  ? [
-                      AppColors.luxuryGold,
-                      AppColors.luxuryGold.withOpacity(0.8),
-                    ]
-                  : [AppColors.deepBlue, AppColors.deepBlue.withOpacity(0.8)],
-              begin: Alignment.topLeft,
-              end: Alignment.bottomRight,
-            ),
-            borderRadius: BorderRadius.circular(
-              ResponsiveUtils.adaptiveBorderRadius(context, base: 16.0),
-            ),
-            boxShadow: [
-              BoxShadow(
-                color:
-                    (isThisSurahPlaying && isAudioPlaying
-                            ? AppColors.luxuryGold
-                            : AppColors.deepBlue)
-                        .withOpacity(0.3),
-                blurRadius: ResponsiveUtils.responsive(
-                  context,
-                  mobile: 12.0,
-                  tablet: 16.0,
-                  desktop: 20.0,
-                ),
-                spreadRadius: 1,
-                offset: const Offset(0, 4),
-              ),
-            ],
-          ),
-          child: Row(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              Icon(
-                isThisSurahPlaying && isAudioPlaying
-                    ? Icons.pause_circle_filled
-                    : Icons.play_circle_filled,
-                color: AppColors.pureWhite,
-                size: ResponsiveUtils.adaptiveIconSize(context, base: 32.0),
-              ),
-              SizedBox(
-                width: ResponsiveUtils.adaptivePadding(
-                  context,
-                  mobile: 12.0,
-                  tablet: 16.0,
-                  desktop: 20.0,
-                ),
-              ),
-              Text(
-                isThisSurahPlaying && isAudioPlaying
-                    ? 'Lecture en cours'
-                    : 'Écouter la sourate',
-                style: TextStyle(
-                  color: AppColors.pureWhite,
-                  fontSize: ResponsiveUtils.adaptiveFontSize(
-                    context,
-                    mobile: 16,
-                    tablet: 18,
-                    desktop: 20,
-                  ),
-                  fontWeight: FontWeight.w600,
-                  letterSpacing: 0.5,
-                ),
-              ),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-
   /// Fixed Bottom Audio Player avec contrôles pour jouer et changer de sourate
   Widget _buildFixedBottomAudioPlayer(
     bool isDark,
@@ -2473,23 +2138,29 @@ class _SurahDetailScreenState extends ConsumerState<SurahDetailScreen>
     final isThisSurahPlaying = currentSurah == widget.surah.number;
     final surahsAsync = ref.watch(surahsProvider);
 
-    return Positioned(
-      bottom: 0,
+    // Calculer la hauteur de la barre pour l'animation
+    final barHeight = ResponsiveUtils.responsive(
+      context,
+      mobile: 120.0,
+      tablet: 140.0,
+      desktop: 160.0,
+    );
+
+    return AnimatedPositioned(
+      duration: const Duration(milliseconds: 300),
+      curve: Curves.easeInOut,
+      bottom: _showBottomBar ? 0 : -barHeight,
       left: 0,
       right: 0,
       child: audioUrlsAsync.when(
         data: (audioUrls) {
           return surahsAsync.when(
             data: (surahs) {
-              // Trouver les sourates précédente et suivante
+              // Trouver la sourate suivante
               final currentIndex = surahs.indexWhere(
                 (s) => s.number == widget.surah.number,
               );
-              final hasPrevious = currentIndex > 0;
               final hasNext = currentIndex < surahs.length - 1;
-              final previousSurah = hasPrevious
-                  ? SurahAdapter.fromApiModel(surahs[currentIndex - 1])
-                  : null;
               final nextSurah = hasNext
                   ? SurahAdapter.fromApiModel(surahs[currentIndex + 1])
                   : null;
@@ -2502,7 +2173,6 @@ class _SurahDetailScreenState extends ConsumerState<SurahDetailScreen>
                 totalAyahs,
                 audioUrls,
                 audioUrlsAsync,
-                previousSurah,
                 nextSurah,
               );
             },
@@ -2515,7 +2185,6 @@ class _SurahDetailScreenState extends ConsumerState<SurahDetailScreen>
               audioUrls,
               audioUrlsAsync,
               null,
-              null,
             ),
             error: (_, __) => _buildFixedPlayerBar(
               isDark,
@@ -2526,7 +2195,6 @@ class _SurahDetailScreenState extends ConsumerState<SurahDetailScreen>
               audioUrls,
               audioUrlsAsync,
               null,
-              null,
             ),
           );
         },
@@ -2536,7 +2204,7 @@ class _SurahDetailScreenState extends ConsumerState<SurahDetailScreen>
     );
   }
 
-  /// Barre audio fixe en bas avec contrôles
+  /// Barre audio fixe en bas avec contrôles simplifiés
   Widget _buildFixedPlayerBar(
     bool isDark,
     bool isThisSurahPlaying,
@@ -2545,10 +2213,8 @@ class _SurahDetailScreenState extends ConsumerState<SurahDetailScreen>
     int totalAyahs,
     List<String> audioUrls,
     AsyncValue<List<String>> audioUrlsAsync,
-    Surah? previousSurah,
     Surah? nextSurah,
   ) {
-    final playlistService = ref.read(globalAudioPlaylistServiceProvider);
     final currentAyah = currentAyahIndex != null && currentAyahIndex > 0
         ? (widget.surah.number == 9 ? currentAyahIndex : currentAyahIndex - 1)
         : 0;
@@ -2616,7 +2282,7 @@ class _SurahDetailScreenState extends ConsumerState<SurahDetailScreen>
                 ],
               ),
             ),
-            // Contenu principal
+            // Contenu principal - Redesigned with better UX
             Padding(
               padding: EdgeInsets.symmetric(
                 horizontal: ResponsiveUtils.adaptivePadding(
@@ -2632,438 +2298,639 @@ class _SurahDetailScreenState extends ConsumerState<SurahDetailScreen>
                   desktop: 16.0,
                 ),
               ),
-              child: Row(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
                 children: [
-                  // Bouton sourate précédente
-                  if (previousSurah != null)
-                    Material(
-                      color: Colors.transparent,
-                      child: InkWell(
-                        onTap: () async {
-                          HapticFeedback.mediumImpact();
-                          // Sauvegarder l'état de lecture avant navigation
-                          final wasPlaying =
-                              isThisSurahPlaying && isAudioPlaying;
-                          // Naviguer vers la sourate précédente
-                          Navigator.pushReplacement(
-                            context,
-                            PageRouteBuilder(
-                              pageBuilder:
-                                  (context, animation, secondaryAnimation) =>
-                                      SurahDetailScreen(
-                                        surah: previousSurah,
-                                        autoPlay: wasPlaying,
-                                      ),
-                              transitionsBuilder:
-                                  (
+                  // Main controls row
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    crossAxisAlignment: CrossAxisAlignment.center,
+                    children: [
+                      // Previous surah button
+                      Builder(
+                        builder: (context) {
+                          final surahsAsync = ref.watch(surahsProvider);
+                          return surahsAsync.when(
+                            data: (surahs) {
+                              final currentIndex = surahs.indexWhere(
+                                (s) => s.number == widget.surah.number,
+                              );
+                              final hasPrevious = currentIndex > 0;
+                              final previousSurah = hasPrevious
+                                  ? SurahAdapter.fromApiModel(
+                                      surahs[currentIndex - 1],
+                                    )
+                                  : null;
+
+                              if (previousSurah == null) {
+                                return SizedBox(
+                                  width: ResponsiveUtils.responsive(
                                     context,
-                                    animation,
-                                    secondaryAnimation,
-                                    child,
-                                  ) {
-                                    const begin = Offset(-1.0, 0.0);
-                                    const end = Offset.zero;
-                                    const curve = Curves.easeInOut;
-                                    var tween = Tween(
-                                      begin: begin,
-                                      end: end,
-                                    ).chain(CurveTween(curve: curve));
-                                    var offsetAnimation = animation.drive(
-                                      tween,
-                                    );
-                                    return SlideTransition(
-                                      position: offsetAnimation,
-                                      child: FadeTransition(
-                                        opacity: animation,
-                                        child: child,
+                                    mobile: 48.0,
+                                    tablet: 52.0,
+                                    desktop: 56.0,
+                                  ),
+                                );
+                              }
+
+                              return Material(
+                                color: Colors.transparent,
+                                child: InkWell(
+                                  onTap: () async {
+                                    HapticFeedback.mediumImpact();
+                                    final wasPlaying =
+                                        isThisSurahPlaying && isAudioPlaying;
+                                    Navigator.pushReplacement(
+                                      context,
+                                      PageRouteBuilder(
+                                        pageBuilder:
+                                            (
+                                              context,
+                                              animation,
+                                              secondaryAnimation,
+                                            ) => SurahDetailScreen(
+                                              surah: previousSurah,
+                                              autoPlay: wasPlaying,
+                                            ),
+                                        transitionsBuilder:
+                                            (
+                                              context,
+                                              animation,
+                                              secondaryAnimation,
+                                              child,
+                                            ) {
+                                              const begin = Offset(-1.0, 0.0);
+                                              const end = Offset.zero;
+                                              const curve = Curves.easeInOut;
+                                              var tween = Tween(
+                                                begin: begin,
+                                                end: end,
+                                              ).chain(CurveTween(curve: curve));
+                                              return SlideTransition(
+                                                position: animation.drive(
+                                                  tween,
+                                                ),
+                                                child: FadeTransition(
+                                                  opacity: animation,
+                                                  child: child,
+                                                ),
+                                              );
+                                            },
+                                        transitionDuration: const Duration(
+                                          milliseconds: 300,
+                                        ),
                                       ),
                                     );
                                   },
-                              transitionDuration: const Duration(
-                                milliseconds: 300,
+                                  borderRadius: BorderRadius.circular(
+                                    ResponsiveUtils.adaptiveBorderRadius(
+                                      context,
+                                      base: 12.0,
+                                    ),
+                                  ),
+                                  child: Container(
+                                    width: ResponsiveUtils.responsive(
+                                      context,
+                                      mobile: 48.0,
+                                      tablet: 52.0,
+                                      desktop: 56.0,
+                                    ),
+                                    height: ResponsiveUtils.responsive(
+                                      context,
+                                      mobile: 48.0,
+                                      tablet: 52.0,
+                                      desktop: 56.0,
+                                    ),
+                                    decoration: BoxDecoration(
+                                      color: AppColors.pureWhite.withOpacity(
+                                        0.2,
+                                      ),
+                                      borderRadius: BorderRadius.circular(
+                                        ResponsiveUtils.adaptiveBorderRadius(
+                                          context,
+                                          base: 12.0,
+                                        ),
+                                      ),
+                                    ),
+                                    child: Icon(
+                                      Icons.skip_previous_rounded,
+                                      color: AppColors.pureWhite,
+                                      size: ResponsiveUtils.adaptiveIconSize(
+                                        context,
+                                        base: 24.0,
+                                      ),
+                                    ),
+                                  ),
+                                ),
+                              );
+                            },
+                            loading: () => SizedBox(
+                              width: ResponsiveUtils.responsive(
+                                context,
+                                mobile: 48.0,
+                                tablet: 52.0,
+                                desktop: 56.0,
+                              ),
+                            ),
+                            error: (_, __) => SizedBox(
+                              width: ResponsiveUtils.responsive(
+                                context,
+                                mobile: 48.0,
+                                tablet: 52.0,
+                                desktop: 56.0,
                               ),
                             ),
                           );
                         },
-                        borderRadius: BorderRadius.circular(
-                          ResponsiveUtils.adaptiveBorderRadius(
-                            context,
-                            base: 12.0,
-                          ),
-                        ),
-                        child: Container(
-                          padding: EdgeInsets.all(
-                            ResponsiveUtils.adaptivePadding(
-                              context,
-                              mobile: 10.0,
+                      ),
+
+                      // Center: Play/Pause button with current info
+                      Expanded(
+                        child: Column(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            // Play/Pause button - More prominent
+                            Material(
+                              color: Colors.transparent,
+                              child: InkWell(
+                                onTap: () async {
+                                  HapticFeedback.mediumImpact();
+                                  final playlistService = ref.read(
+                                    globalAudioPlaylistServiceProvider,
+                                  );
+
+                                  if (!isThisSurahPlaying) {
+                                    try {
+                                      await playlistService.loadSurahPlaylist(
+                                        audioUrls,
+                                      );
+                                      ref
+                                              .read(
+                                                currentPlayingSurahProvider
+                                                    .notifier,
+                                              )
+                                              .state =
+                                          widget.surah.number;
+                                      ref
+                                              .read(
+                                                currentPlayingSurahNameProvider
+                                                    .notifier,
+                                              )
+                                              .state =
+                                          widget.surah.name;
+                                      ref
+                                              .read(
+                                                currentSurahTotalAyahsProvider
+                                                    .notifier,
+                                              )
+                                              .state =
+                                          totalAyahs;
+                                      await playlistService.play();
+                                    } catch (e) {
+                                      debugPrint('Error starting playback: $e');
+                                      if (mounted) {
+                                        ScaffoldMessenger.of(
+                                          context,
+                                        ).showSnackBar(
+                                          SnackBar(
+                                            content: Text(
+                                              'Erreur de démarrage: $e',
+                                            ),
+                                            backgroundColor: AppColors.error,
+                                          ),
+                                        );
+                                      }
+                                    }
+                                  } else {
+                                    if (isAudioPlaying) {
+                                      playlistService.pause();
+                                    } else {
+                                      playlistService.play();
+                                    }
+                                  }
+                                },
+                                borderRadius: BorderRadius.circular(50),
+                                child: AnimatedContainer(
+                                  duration: const Duration(milliseconds: 200),
+                                  curve: Curves.easeInOut,
+                                  width: ResponsiveUtils.responsive(
+                                    context,
+                                    mobile: 56.0,
+                                    tablet: 60.0,
+                                    desktop: 64.0,
+                                  ),
+                                  height: ResponsiveUtils.responsive(
+                                    context,
+                                    mobile: 56.0,
+                                    tablet: 60.0,
+                                    desktop: 64.0,
+                                  ),
+                                  decoration: BoxDecoration(
+                                    color: AppColors.pureWhite.withOpacity(
+                                      isThisSurahPlaying && isAudioPlaying
+                                          ? 0.4
+                                          : 0.3,
+                                    ),
+                                    shape: BoxShape.circle,
+                                    boxShadow: [
+                                      BoxShadow(
+                                        color: AppColors.pureWhite.withOpacity(
+                                          0.5,
+                                        ),
+                                        blurRadius:
+                                            isThisSurahPlaying && isAudioPlaying
+                                            ? 20
+                                            : 12,
+                                        spreadRadius:
+                                            isThisSurahPlaying && isAudioPlaying
+                                            ? 3
+                                            : 2,
+                                        offset: const Offset(0, 3),
+                                      ),
+                                    ],
+                                  ),
+                                  child: AnimatedSwitcher(
+                                    duration: const Duration(milliseconds: 200),
+                                    child: Icon(
+                                      isThisSurahPlaying && isAudioPlaying
+                                          ? Icons.pause_rounded
+                                          : Icons.play_arrow_rounded,
+                                      key: ValueKey(
+                                        '${isThisSurahPlaying}_$isAudioPlaying',
+                                      ),
+                                      color: AppColors.pureWhite,
+                                      size: ResponsiveUtils.adaptiveIconSize(
+                                        context,
+                                        base: 28.0,
+                                      ),
+                                    ),
+                                  ),
+                                ),
+                              ),
                             ),
-                          ),
-                          decoration: BoxDecoration(
-                            color: AppColors.pureWhite.withOpacity(0.2),
+                            SizedBox(
+                              height: ResponsiveUtils.adaptivePadding(
+                                context,
+                                mobile: 6.0,
+                              ),
+                            ),
+                            // Current ayah info
+                            if (currentAyahIndex != null &&
+                                currentAyahIndex > 0)
+                              Text(
+                                'Ayah ${widget.surah.number == 9 ? currentAyahIndex : currentAyahIndex - 1} of $totalAyahs',
+                                style: TextStyle(
+                                  color: AppColors.pureWhite.withOpacity(0.9),
+                                  fontSize: ResponsiveUtils.adaptiveFontSize(
+                                    context,
+                                    mobile: 12,
+                                    tablet: 13,
+                                    desktop: 14,
+                                  ),
+                                  fontWeight: FontWeight.w500,
+                                ),
+                              )
+                            else
+                              Text(
+                                'Surah ${widget.surah.number}',
+                                style: TextStyle(
+                                  color: AppColors.pureWhite.withOpacity(0.9),
+                                  fontSize: ResponsiveUtils.adaptiveFontSize(
+                                    context,
+                                    mobile: 12,
+                                    tablet: 13,
+                                    desktop: 14,
+                                  ),
+                                  fontWeight: FontWeight.w500,
+                                ),
+                              ),
+                          ],
+                        ),
+                      ),
+
+                      // Next surah button
+                      if (nextSurah != null)
+                        Material(
+                          color: Colors.transparent,
+                          child: InkWell(
+                            onTap: () async {
+                              HapticFeedback.mediumImpact();
+                              final wasPlaying =
+                                  isThisSurahPlaying && isAudioPlaying;
+                              Navigator.pushReplacement(
+                                context,
+                                PageRouteBuilder(
+                                  pageBuilder:
+                                      (
+                                        context,
+                                        animation,
+                                        secondaryAnimation,
+                                      ) => SurahDetailScreen(
+                                        surah: nextSurah,
+                                        autoPlay: wasPlaying,
+                                      ),
+                                  transitionsBuilder:
+                                      (
+                                        context,
+                                        animation,
+                                        secondaryAnimation,
+                                        child,
+                                      ) {
+                                        const begin = Offset(1.0, 0.0);
+                                        const end = Offset.zero;
+                                        const curve = Curves.easeInOut;
+                                        var tween = Tween(
+                                          begin: begin,
+                                          end: end,
+                                        ).chain(CurveTween(curve: curve));
+                                        var offsetAnimation = animation.drive(
+                                          tween,
+                                        );
+                                        return SlideTransition(
+                                          position: offsetAnimation,
+                                          child: FadeTransition(
+                                            opacity: animation,
+                                            child: child,
+                                          ),
+                                        );
+                                      },
+                                  transitionDuration: const Duration(
+                                    milliseconds: 300,
+                                  ),
+                                ),
+                              );
+                            },
                             borderRadius: BorderRadius.circular(
                               ResponsiveUtils.adaptiveBorderRadius(
                                 context,
                                 base: 12.0,
                               ),
                             ),
-                          ),
-                          child: Icon(
-                            Icons.skip_previous_rounded,
-                            color: AppColors.pureWhite,
-                            size: ResponsiveUtils.adaptiveIconSize(
-                              context,
-                              base: 24.0,
-                            ),
-                          ),
-                        ),
-                      ),
-                    ),
-                  if (previousSurah != null)
-                    SizedBox(
-                      width: ResponsiveUtils.adaptivePadding(
-                        context,
-                        mobile: 8.0,
-                      ),
-                    ),
-                  // Bouton play/pause
-                  Material(
-                    color: Colors.transparent,
-                    child: InkWell(
-                      onTap: () async {
-                        HapticFeedback.mediumImpact();
-
-                        if (!isThisSurahPlaying) {
-                          // Charger et démarrer cette sourate
-                          try {
-                            await playlistService.loadSurahPlaylist(audioUrls);
-                            ref
-                                    .read(currentPlayingSurahProvider.notifier)
-                                    .state =
-                                widget.surah.number;
-                            ref
-                                .read(currentPlayingSurahNameProvider.notifier)
-                                .state = widget
-                                .surah
-                                .name;
-                            ref
-                                    .read(
-                                      currentSurahTotalAyahsProvider.notifier,
-                                    )
-                                    .state =
-                                totalAyahs;
-                            await playlistService.play();
-                          } catch (e) {
-                            debugPrint('Error starting playback: $e');
-                            if (mounted) {
-                              ScaffoldMessenger.of(context).showSnackBar(
-                                SnackBar(
-                                  content: Text('Erreur de démarrage: $e'),
-                                  backgroundColor: AppColors.error,
-                                ),
-                              );
-                            }
-                          }
-                        } else {
-                          // Toggle play/pause
-                          if (isAudioPlaying) {
-                            playlistService.pause();
-                          } else {
-                            playlistService.play();
-                          }
-                        }
-                      },
-                      borderRadius: BorderRadius.circular(
-                        ResponsiveUtils.adaptiveBorderRadius(
-                          context,
-                          base: 16.0,
-                        ),
-                      ),
-                      child: AnimatedContainer(
-                        duration: const Duration(milliseconds: 200),
-                        curve: Curves.easeInOut,
-                        width: ResponsiveUtils.responsive(
-                          context,
-                          mobile: 56.0,
-                          tablet: 60.0,
-                          desktop: 64.0,
-                        ),
-                        height: ResponsiveUtils.responsive(
-                          context,
-                          mobile: 56.0,
-                          tablet: 60.0,
-                          desktop: 64.0,
-                        ),
-                        decoration: BoxDecoration(
-                          color: AppColors.pureWhite.withOpacity(
-                            isThisSurahPlaying && isAudioPlaying ? 0.3 : 0.2,
-                          ),
-                          shape: BoxShape.circle,
-                          boxShadow: [
-                            BoxShadow(
-                              color: AppColors.pureWhite.withOpacity(0.3),
-                              blurRadius: isThisSurahPlaying && isAudioPlaying
-                                  ? 12
-                                  : 6,
-                              spreadRadius: isThisSurahPlaying && isAudioPlaying
-                                  ? 2
-                                  : 1,
-                            ),
-                          ],
-                        ),
-                        child: AnimatedSwitcher(
-                          duration: const Duration(milliseconds: 200),
-                          child: Icon(
-                            isThisSurahPlaying && isAudioPlaying
-                                ? Icons.pause_rounded
-                                : Icons.play_arrow_rounded,
-                            key: ValueKey(
-                              '${isThisSurahPlaying}_$isAudioPlaying',
-                            ),
-                            color: AppColors.pureWhite,
-                            size: ResponsiveUtils.adaptiveIconSize(
-                              context,
-                              base: 28.0,
-                            ),
-                          ),
-                        ),
-                      ),
-                    ),
-                  ),
-                  SizedBox(
-                    width: ResponsiveUtils.adaptivePadding(
-                      context,
-                      mobile: 12.0,
-                      tablet: 14.0,
-                      desktop: 16.0,
-                    ),
-                  ),
-                  // Info de la sourate
-                  Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        Row(
-                          children: [
-                            Expanded(
-                              child: Text(
-                                widget.surah.name,
-                                style: TextStyle(
-                                  color: AppColors.pureWhite,
-                                  fontSize: ResponsiveUtils.adaptiveFontSize(
-                                    context,
-                                    mobile: 16,
-                                    tablet: 17,
-                                    desktop: 18,
-                                  ),
-                                  fontWeight: FontWeight.bold,
-                                  letterSpacing: 0.3,
-                                  shadows: [
-                                    Shadow(
-                                      color: Colors.black.withOpacity(0.2),
-                                      blurRadius: 2,
-                                      offset: const Offset(0, 1),
-                                    ),
-                                  ],
-                                ),
-                                maxLines: 1,
-                                overflow: TextOverflow.ellipsis,
+                            child: Container(
+                              width: ResponsiveUtils.responsive(
+                                context,
+                                mobile: 48.0,
+                                tablet: 52.0,
+                                desktop: 56.0,
                               ),
-                            ),
-                            // Indicateur de lecture animé
-                            if (isThisSurahPlaying && isAudioPlaying)
-                              TweenAnimationBuilder<double>(
-                                tween: Tween(begin: 0.0, end: 1.0),
-                                duration: const Duration(milliseconds: 1000),
-                                curve: Curves.easeInOut,
-                                builder: (context, value, child) {
-                                  return Opacity(
-                                    opacity: 0.5 + (0.5 * (value % 1)),
-                                    child: Container(
-                                      width: 8,
-                                      height: 8,
-                                      decoration: BoxDecoration(
-                                        color: AppColors.pureWhite,
-                                        shape: BoxShape.circle,
-                                        boxShadow: [
-                                          BoxShadow(
-                                            color: AppColors.pureWhite
-                                                .withOpacity(0.8),
-                                            blurRadius: 4,
-                                            spreadRadius: 1,
-                                          ),
-                                        ],
-                                      ),
-                                    ),
-                                  );
-                                },
-                              ),
-                          ],
-                        ),
-                        SizedBox(
-                          height: ResponsiveUtils.adaptivePadding(
-                            context,
-                            mobile: 4.0,
-                          ),
-                        ),
-                        Row(
-                          children: [
-                            Container(
-                              padding: EdgeInsets.symmetric(
-                                horizontal: ResponsiveUtils.adaptivePadding(
-                                  context,
-                                  mobile: 6.0,
-                                  tablet: 8.0,
-                                  desktop: 10.0,
-                                ),
-                                vertical: ResponsiveUtils.adaptivePadding(
-                                  context,
-                                  mobile: 2.0,
-                                  tablet: 3.0,
-                                  desktop: 4.0,
-                                ),
+                              height: ResponsiveUtils.responsive(
+                                context,
+                                mobile: 48.0,
+                                tablet: 52.0,
+                                desktop: 56.0,
                               ),
                               decoration: BoxDecoration(
-                                color: AppColors.pureWhite.withOpacity(0.25),
+                                color: AppColors.pureWhite.withOpacity(0.2),
+                                borderRadius: BorderRadius.circular(
+                                  ResponsiveUtils.adaptiveBorderRadius(
+                                    context,
+                                    base: 12.0,
+                                  ),
+                                ),
+                              ),
+                              child: Icon(
+                                Icons.skip_next_rounded,
+                                color: AppColors.pureWhite,
+                                size: ResponsiveUtils.adaptiveIconSize(
+                                  context,
+                                  base: 24.0,
+                                ),
+                              ),
+                            ),
+                          ),
+                        )
+                      else
+                        SizedBox(
+                          width: ResponsiveUtils.responsive(
+                            context,
+                            mobile: 48.0,
+                            tablet: 52.0,
+                            desktop: 56.0,
+                          ),
+                        ),
+                    ],
+                  ),
+
+                  // Secondary actions row - Compact
+                  SizedBox(
+                    height: ResponsiveUtils.adaptivePadding(
+                      context,
+                      mobile: 8.0,
+                    ),
+                  ),
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      // Auto-scroll toggle
+                      Material(
+                        color: Colors.transparent,
+                        child: InkWell(
+                          onTap: () {
+                            HapticFeedback.lightImpact();
+                            setState(() {
+                              _isAutoScrollEnabled = !_isAutoScrollEnabled;
+                              _shouldAutoScroll = _isAutoScrollEnabled;
+                            });
+                            final isAudioPlaying = ref.read(
+                              isAudioPlayingProvider,
+                            );
+                            final currentSurah = ref.read(
+                              currentPlayingSurahProvider,
+                            );
+                            final isThisSurahPlaying =
+                                currentSurah == widget.surah.number;
+
+                            if (_isAutoScrollEnabled &&
+                                isAudioPlaying &&
+                                isThisSurahPlaying) {
+                              _startContinuousScroll();
+                            } else {
+                              _stopContinuousScroll();
+                            }
+                          },
+                          borderRadius: BorderRadius.circular(
+                            ResponsiveUtils.adaptiveBorderRadius(
+                              context,
+                              base: 8.0,
+                            ),
+                          ),
+                          child: Container(
+                            padding: EdgeInsets.symmetric(
+                              horizontal: ResponsiveUtils.adaptivePadding(
+                                context,
+                                mobile: 10.0,
+                              ),
+                              vertical: ResponsiveUtils.adaptivePadding(
+                                context,
+                                mobile: 6.0,
+                              ),
+                            ),
+                            decoration: BoxDecoration(
+                              color: AppColors.pureWhite.withOpacity(
+                                _isAutoScrollEnabled ? 0.25 : 0.15,
+                              ),
+                              borderRadius: BorderRadius.circular(
+                                ResponsiveUtils.adaptiveBorderRadius(
+                                  context,
+                                  base: 8.0,
+                                ),
+                              ),
+                            ),
+                            child: Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                Icon(
+                                  _isAutoScrollEnabled
+                                      ? Icons.swap_vertical_circle
+                                      : Icons.swap_vertical_circle_outlined,
+                                  color: AppColors.pureWhite,
+                                  size: ResponsiveUtils.adaptiveIconSize(
+                                    context,
+                                    base: 16.0,
+                                  ),
+                                ),
+                                SizedBox(
+                                  width: ResponsiveUtils.adaptivePadding(
+                                    context,
+                                    mobile: 4.0,
+                                  ),
+                                ),
+                                Text(
+                                  'Auto-scroll',
+                                  style: TextStyle(
+                                    color: AppColors.pureWhite.withOpacity(0.9),
+                                    fontSize: ResponsiveUtils.adaptiveFontSize(
+                                      context,
+                                      mobile: 11,
+                                      tablet: 12,
+                                      desktop: 13,
+                                    ),
+                                    fontWeight: FontWeight.w500,
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ),
+                      ),
+                      SizedBox(
+                        width: ResponsiveUtils.adaptivePadding(
+                          context,
+                          mobile: 8.0,
+                        ),
+                      ),
+                      // Bookmark button
+                      if (currentAyahIndex != null && currentAyahIndex > 0)
+                        Builder(
+                          builder: (context) {
+                            final ayahNumber = widget.surah.number == 9
+                                ? currentAyahIndex
+                                : currentAyahIndex - 1;
+                            final isAyahFavorite = ref.watch(
+                              isAyahFavoriteProvider((
+                                surah: widget.surah.number,
+                                ayah: ayahNumber,
+                              )),
+                            );
+                            return Material(
+                              color: Colors.transparent,
+                              child: InkWell(
+                                onTap: () async {
+                                  HapticFeedback.lightImpact();
+                                  final favoritesNotifier = ref.read(
+                                    favoritesProvider.notifier,
+                                  );
+                                  await favoritesNotifier.toggleAyahFavorite(
+                                    widget.surah.number,
+                                    ayahNumber,
+                                  );
+                                  if (mounted) {
+                                    ScaffoldMessenger.of(context).showSnackBar(
+                                      SnackBar(
+                                        content: Text(
+                                          isAyahFavorite
+                                              ? 'Ayah retiré des favoris'
+                                              : 'Ayah ajouté aux favoris',
+                                        ),
+                                        backgroundColor: AppColors.luxuryGold,
+                                        duration: const Duration(seconds: 2),
+                                      ),
+                                    );
+                                  }
+                                },
                                 borderRadius: BorderRadius.circular(
                                   ResponsiveUtils.adaptiveBorderRadius(
                                     context,
                                     base: 8.0,
                                   ),
                                 ),
-                              ),
-                              child: Text(
-                                currentAyah > 0
-                                    ? 'Ayah $currentAyah'
-                                    : isThisSurahPlaying
-                                    ? 'Bismillah'
-                                    : 'Prêt',
-                                style: TextStyle(
-                                  color: AppColors.pureWhite,
-                                  fontSize: ResponsiveUtils.adaptiveFontSize(
-                                    context,
-                                    mobile: 10,
-                                    tablet: 11,
-                                    desktop: 12,
+                                child: Container(
+                                  padding: EdgeInsets.symmetric(
+                                    horizontal: ResponsiveUtils.adaptivePadding(
+                                      context,
+                                      mobile: 10.0,
+                                    ),
+                                    vertical: ResponsiveUtils.adaptivePadding(
+                                      context,
+                                      mobile: 6.0,
+                                    ),
                                   ),
-                                  fontWeight: FontWeight.w600,
+                                  decoration: BoxDecoration(
+                                    color: AppColors.pureWhite.withOpacity(
+                                      isAyahFavorite ? 0.25 : 0.15,
+                                    ),
+                                    borderRadius: BorderRadius.circular(
+                                      ResponsiveUtils.adaptiveBorderRadius(
+                                        context,
+                                        base: 8.0,
+                                      ),
+                                    ),
+                                  ),
+                                  child: Row(
+                                    mainAxisSize: MainAxisSize.min,
+                                    children: [
+                                      Icon(
+                                        isAyahFavorite
+                                            ? Icons.bookmark
+                                            : Icons.bookmark_border,
+                                        color: isAyahFavorite
+                                            ? AppColors.luxuryGold
+                                            : AppColors.pureWhite,
+                                        size: ResponsiveUtils.adaptiveIconSize(
+                                          context,
+                                          base: 16.0,
+                                        ),
+                                      ),
+                                      SizedBox(
+                                        width: ResponsiveUtils.adaptivePadding(
+                                          context,
+                                          mobile: 4.0,
+                                        ),
+                                      ),
+                                      Text(
+                                        'Bookmark',
+                                        style: TextStyle(
+                                          color: AppColors.pureWhite
+                                              .withOpacity(0.9),
+                                          fontSize:
+                                              ResponsiveUtils.adaptiveFontSize(
+                                                context,
+                                                mobile: 11,
+                                                tablet: 12,
+                                                desktop: 13,
+                                              ),
+                                          fontWeight: FontWeight.w500,
+                                        ),
+                                      ),
+                                    ],
+                                  ),
                                 ),
                               ),
-                            ),
-                            SizedBox(
-                              width: ResponsiveUtils.adaptivePadding(
-                                context,
-                                mobile: 6.0,
-                              ),
-                            ),
-                            Text(
-                              '• $totalAyahs',
-                              style: TextStyle(
-                                color: AppColors.pureWhite.withOpacity(0.8),
-                                fontSize: ResponsiveUtils.adaptiveFontSize(
-                                  context,
-                                  mobile: 10,
-                                  tablet: 11,
-                                  desktop: 12,
-                                ),
-                                fontWeight: FontWeight.w500,
-                              ),
-                            ),
-                          ],
+                            );
+                          },
                         ),
-                      ],
-                    ),
+                    ],
                   ),
-                  SizedBox(
-                    width: ResponsiveUtils.adaptivePadding(
-                      context,
-                      mobile: 8.0,
-                    ),
-                  ),
-                  // Bouton sourate suivante
-                  if (nextSurah != null)
-                    Material(
-                      color: Colors.transparent,
-                      child: InkWell(
-                        onTap: () async {
-                          HapticFeedback.mediumImpact();
-                          // Sauvegarder l'état de lecture avant navigation
-                          final wasPlaying =
-                              isThisSurahPlaying && isAudioPlaying;
-                          // Naviguer vers la sourate suivante
-                          Navigator.pushReplacement(
-                            context,
-                            PageRouteBuilder(
-                              pageBuilder:
-                                  (context, animation, secondaryAnimation) =>
-                                      SurahDetailScreen(
-                                        surah: nextSurah,
-                                        autoPlay: wasPlaying,
-                                      ),
-                              transitionsBuilder:
-                                  (
-                                    context,
-                                    animation,
-                                    secondaryAnimation,
-                                    child,
-                                  ) {
-                                    const begin = Offset(1.0, 0.0);
-                                    const end = Offset.zero;
-                                    const curve = Curves.easeInOut;
-                                    var tween = Tween(
-                                      begin: begin,
-                                      end: end,
-                                    ).chain(CurveTween(curve: curve));
-                                    var offsetAnimation = animation.drive(
-                                      tween,
-                                    );
-                                    return SlideTransition(
-                                      position: offsetAnimation,
-                                      child: FadeTransition(
-                                        opacity: animation,
-                                        child: child,
-                                      ),
-                                    );
-                                  },
-                              transitionDuration: const Duration(
-                                milliseconds: 300,
-                              ),
-                            ),
-                          );
-                        },
-                        borderRadius: BorderRadius.circular(
-                          ResponsiveUtils.adaptiveBorderRadius(
-                            context,
-                            base: 12.0,
-                          ),
-                        ),
-                        child: Container(
-                          padding: EdgeInsets.all(
-                            ResponsiveUtils.adaptivePadding(
-                              context,
-                              mobile: 10.0,
-                            ),
-                          ),
-                          decoration: BoxDecoration(
-                            color: AppColors.pureWhite.withOpacity(0.2),
-                            borderRadius: BorderRadius.circular(
-                              ResponsiveUtils.adaptiveBorderRadius(
-                                context,
-                                base: 12.0,
-                              ),
-                            ),
-                          ),
-                          child: Icon(
-                            Icons.skip_next_rounded,
-                            color: AppColors.pureWhite,
-                            size: ResponsiveUtils.adaptiveIconSize(
-                              context,
-                              base: 24.0,
-                            ),
-                          ),
-                        ),
-                      ),
-                    ),
                 ],
               ),
             ),
@@ -3071,6 +2938,1638 @@ class _SurahDetailScreenState extends ConsumerState<SurahDetailScreen>
         ),
       ),
     );
+  }
+
+  /// Afficher le panneau de paramètres
+  void _showSettingsPanel(bool isDark) {
+    HapticFeedback.lightImpact();
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      isDismissible: true,
+      enableDrag: true,
+      builder: (context) {
+        return _SettingsPanelContent(
+          isDark: isDark,
+          surahNumber: widget.surah.number,
+          showScriptSelector: (ctx, dark, r) =>
+              _showScriptSelector(ctx, dark, r),
+          showReciterSelector: (ctx, dark, r) =>
+              _showReciterSelector(ctx, dark, r),
+          showTranslationSelector: (ctx, dark, r) =>
+              _showTranslationSelector(ctx, dark, r),
+          showRepetitionSelector: (ctx, dark, r) =>
+              _showRepetitionSelector(ctx, dark, r),
+          downloadSurahAudio: (dark) => _downloadSurahAudio(dark),
+          isAutoScrollEnabled: _isAutoScrollEnabled,
+          showTranslation: _showTranslation,
+          onAutoScrollChanged: (value) {
+            setState(() {
+              _isAutoScrollEnabled = value;
+              _shouldAutoScroll = value;
+            });
+            final isAudioPlaying = ref.read(isAudioPlayingProvider);
+            final currentSurah = ref.read(currentPlayingSurahProvider);
+            final isThisSurahPlaying = currentSurah == widget.surah.number;
+
+            if (_isAutoScrollEnabled && isAudioPlaying && isThisSurahPlaying) {
+              _startContinuousScroll();
+            } else {
+              _stopContinuousScroll();
+            }
+          },
+          onTranslationChanged: (value) {
+            setState(() {
+              _showTranslation = value;
+            });
+          },
+        );
+      },
+    );
+  }
+
+  /// Afficher le sélecteur de récitateur
+  void _showReciterSelector(BuildContext context, bool isDark, WidgetRef ref) {
+    HapticFeedback.lightImpact();
+    final popularReciters = AudioService.popularReciters;
+
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (context) {
+        return Consumer(
+          builder: (context, consumerRef, child) {
+            final screenHeight = MediaQuery.of(context).size.height;
+            final maxHeight = screenHeight * 0.85; // Max 85% of screen height
+            final selectedReciterFromRef = consumerRef.read(
+              selectedReciterPersistentProvider,
+            );
+
+            return Container(
+              constraints: BoxConstraints(maxHeight: maxHeight),
+              decoration: BoxDecoration(
+                color: isDark ? AppColors.darkSurface : AppColors.pureWhite,
+                borderRadius: BorderRadius.only(
+                  topLeft: Radius.circular(
+                    ResponsiveUtils.adaptiveBorderRadius(context, base: 24.0),
+                  ),
+                  topRight: Radius.circular(
+                    ResponsiveUtils.adaptiveBorderRadius(context, base: 24.0),
+                  ),
+                ),
+              ),
+              child: SafeArea(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    // Handle bar
+                    Container(
+                      margin: EdgeInsets.only(
+                        top: ResponsiveUtils.adaptivePadding(
+                          context,
+                          mobile: 12.0,
+                        ),
+                      ),
+                      width: ResponsiveUtils.responsive(
+                        context,
+                        mobile: 40.0,
+                        tablet: 50.0,
+                        desktop: 60.0,
+                      ),
+                      height: 4,
+                      decoration: BoxDecoration(
+                        color: isDark
+                            ? AppColors.pureWhite.withOpacity(0.2)
+                            : AppColors.textSecondary.withOpacity(0.3),
+                        borderRadius: BorderRadius.circular(2),
+                      ),
+                    ),
+                    // Title
+                    Padding(
+                      padding: EdgeInsets.all(
+                        ResponsiveUtils.adaptivePadding(context, mobile: 16.0),
+                      ),
+                      child: Text(
+                        'Sélectionner un récitateur',
+                        style: TextStyle(
+                          color: isDark
+                              ? AppColors.pureWhite
+                              : AppColors.textPrimary,
+                          fontSize: ResponsiveUtils.adaptiveFontSize(
+                            context,
+                            mobile: 20,
+                            tablet: 22,
+                            desktop: 24,
+                          ),
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                    ),
+                    // Scrollable list of reciters
+                    Flexible(
+                      child: SingleChildScrollView(
+                        padding: EdgeInsets.symmetric(
+                          horizontal: ResponsiveUtils.adaptivePadding(
+                            context,
+                            mobile: 16.0,
+                            tablet: 20.0,
+                            desktop: 24.0,
+                          ),
+                          vertical: ResponsiveUtils.adaptivePadding(
+                            context,
+                            mobile: 8.0,
+                          ),
+                        ),
+                        child: Column(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            ...popularReciters.map((reciter) {
+                              final isSelected =
+                                  selectedReciterFromRef == reciter['id'];
+                              return Material(
+                                color: Colors.transparent,
+                                child: InkWell(
+                                  onTap: () async {
+                                    HapticFeedback.mediumImpact();
+                                    final currentSurah = consumerRef.read(
+                                      currentPlayingSurahProvider,
+                                    );
+                                    final isAudioPlaying = consumerRef.read(
+                                      isAudioPlayingProvider,
+                                    );
+                                    // Get the surah number - this method is called from settings panel
+                                    // so we need to get it from the current playing surah or use a default
+                                    final surahNumber = currentSurah ?? 1;
+                                    final isThisSurahPlaying =
+                                        currentSurah != null;
+                                    final wasPlaying =
+                                        isThisSurahPlaying && isAudioPlaying;
+
+                                    // Changer le récitateur
+                                    await consumerRef
+                                        .read(
+                                          selectedReciterPersistentProvider
+                                              .notifier,
+                                        )
+                                        .setReciter(reciter['id']!);
+
+                                    // Si une sourate est en cours, la recharger avec le nouveau récitateur
+                                    if (isThisSurahPlaying) {
+                                      try {
+                                        final audioService = consumerRef.read(
+                                          audioServiceProvider,
+                                        );
+                                        final audioUrls = await audioService
+                                            .getSurahAudioUrls(
+                                              surahNumber,
+                                              reciter: reciter['id']!,
+                                            );
+
+                                        if (audioUrls.isNotEmpty) {
+                                          final playlistService = consumerRef.read(
+                                            globalAudioPlaylistServiceProvider,
+                                          );
+                                          final currentIndex = consumerRef.read(
+                                            currentAyahIndexProvider,
+                                          );
+
+                                          // Recharger avec le nouveau récitateur
+                                          await playlistService
+                                              .loadSurahPlaylist(
+                                                audioUrls,
+                                                startIndex: currentIndex,
+                                              );
+
+                                          // Redémarrer la lecture si elle était en cours
+                                          if (wasPlaying) {
+                                            await playlistService.play();
+                                          }
+
+                                          if (context.mounted) {
+                                            ScaffoldMessenger.of(
+                                              context,
+                                            ).showSnackBar(
+                                              SnackBar(
+                                                content: Text(
+                                                  'Récitateur changé: ${reciter['name']}',
+                                                ),
+                                                backgroundColor:
+                                                    AppColors.luxuryGold,
+                                                duration: const Duration(
+                                                  seconds: 2,
+                                                ),
+                                              ),
+                                            );
+                                          }
+                                        }
+                                      } catch (e) {
+                                        debugPrint(
+                                          'Error changing reciter: $e',
+                                        );
+                                        if (context.mounted) {
+                                          ScaffoldMessenger.of(
+                                            context,
+                                          ).showSnackBar(
+                                            SnackBar(
+                                              content: Text('Erreur: $e'),
+                                              backgroundColor: AppColors.error,
+                                              duration: const Duration(
+                                                seconds: 2,
+                                              ),
+                                            ),
+                                          );
+                                        }
+                                      }
+                                    }
+
+                                    // Invalider le provider pour recharger les URLs
+                                    if (currentSurah != null) {
+                                      consumerRef.invalidate(
+                                        surahAudioUrlsProvider(currentSurah),
+                                      );
+                                    }
+
+                                    if (context.mounted) {
+                                      Navigator.pop(context);
+                                    }
+                                  },
+                                  borderRadius: BorderRadius.circular(
+                                    ResponsiveUtils.adaptiveBorderRadius(
+                                      context,
+                                      base: 12.0,
+                                    ),
+                                  ),
+                                  child: Container(
+                                    padding: EdgeInsets.all(
+                                      ResponsiveUtils.adaptivePadding(
+                                        context,
+                                        mobile: 12.0,
+                                        tablet: 14.0,
+                                        desktop: 16.0,
+                                      ),
+                                    ),
+                                    margin: EdgeInsets.only(
+                                      bottom: ResponsiveUtils.adaptivePadding(
+                                        context,
+                                        mobile: 8.0,
+                                      ),
+                                    ),
+                                    decoration: BoxDecoration(
+                                      color: isSelected
+                                          ? (isDark
+                                                ? AppColors.luxuryGold
+                                                      .withOpacity(0.2)
+                                                : AppColors.luxuryGold
+                                                      .withOpacity(0.1))
+                                          : (isDark
+                                                ? AppColors.darkCard
+                                                : AppColors.ivory.withOpacity(
+                                                    0.5,
+                                                  )),
+                                      borderRadius: BorderRadius.circular(
+                                        ResponsiveUtils.adaptiveBorderRadius(
+                                          context,
+                                          base: 12.0,
+                                        ),
+                                      ),
+                                      border: Border.all(
+                                        color: isSelected
+                                            ? AppColors.luxuryGold.withOpacity(
+                                                0.5,
+                                              )
+                                            : (isDark
+                                                  ? AppColors.pureWhite
+                                                        .withOpacity(0.1)
+                                                  : AppColors.deepBlue
+                                                        .withOpacity(0.1)),
+                                        width: isSelected ? 2 : 1,
+                                      ),
+                                    ),
+                                    child: Row(
+                                      children: [
+                                        if (isSelected)
+                                          Icon(
+                                            Icons.check_circle,
+                                            color: AppColors.luxuryGold,
+                                            size:
+                                                ResponsiveUtils.adaptiveIconSize(
+                                                  context,
+                                                  base: 24.0,
+                                                ),
+                                          ),
+                                        if (isSelected)
+                                          SizedBox(
+                                            width:
+                                                ResponsiveUtils.adaptivePadding(
+                                                  context,
+                                                  mobile: 12.0,
+                                                ),
+                                          ),
+                                        Expanded(
+                                          child: Column(
+                                            crossAxisAlignment:
+                                                CrossAxisAlignment.start,
+                                            children: [
+                                              Text(
+                                                reciter['name'] ?? '',
+                                                style: TextStyle(
+                                                  color: isDark
+                                                      ? AppColors.pureWhite
+                                                      : AppColors.textPrimary,
+                                                  fontSize:
+                                                      ResponsiveUtils.adaptiveFontSize(
+                                                        context,
+                                                        mobile: 16,
+                                                        tablet: 17,
+                                                        desktop: 18,
+                                                      ),
+                                                  fontWeight: isSelected
+                                                      ? FontWeight.w600
+                                                      : FontWeight.normal,
+                                                ),
+                                              ),
+                                              SizedBox(
+                                                height:
+                                                    ResponsiveUtils.adaptivePadding(
+                                                      context,
+                                                      mobile: 4.0,
+                                                    ),
+                                              ),
+                                              Text(
+                                                reciter['arabicName'] ?? '',
+                                                style: TextStyle(
+                                                  fontFamily: 'Cairo',
+                                                  color: isDark
+                                                      ? AppColors.pureWhite
+                                                            .withOpacity(0.7)
+                                                      : AppColors.textSecondary,
+                                                  fontSize:
+                                                      ResponsiveUtils.adaptiveFontSize(
+                                                        context,
+                                                        mobile: 14,
+                                                        tablet: 15,
+                                                        desktop: 16,
+                                                      ),
+                                                ),
+                                                textDirection:
+                                                    TextDirection.rtl,
+                                              ),
+                                            ],
+                                          ),
+                                        ),
+                                      ],
+                                    ),
+                                  ),
+                                ),
+                              );
+                            }).toList(),
+                            SizedBox(
+                              height: ResponsiveUtils.adaptivePadding(
+                                context,
+                                mobile: 12.0,
+                              ),
+                            ),
+                            TextButton(
+                              onPressed: () {
+                                HapticFeedback.lightImpact();
+                                Navigator.pop(context);
+                              },
+                              child: Text(
+                                'Annuler',
+                                style: TextStyle(
+                                  color: isDark
+                                      ? AppColors.pureWhite.withOpacity(0.7)
+                                      : AppColors.textSecondary,
+                                  fontSize: ResponsiveUtils.adaptiveFontSize(
+                                    context,
+                                    mobile: 16,
+                                    tablet: 17,
+                                    desktop: 18,
+                                  ),
+                                ),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            );
+          },
+        );
+      },
+    );
+  }
+
+  /// Afficher le sélecteur de traduction
+  void _showTranslationSelector(
+    BuildContext context,
+    bool isDark,
+    WidgetRef ref,
+  ) {
+    HapticFeedback.lightImpact();
+    final selectedTranslation = ref.read(translationEditionProvider);
+    final allTranslations = AvailableTranslations.all;
+
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (context) {
+        final screenHeight = MediaQuery.of(context).size.height;
+        final maxHeight = screenHeight * 0.85;
+
+        return Container(
+          constraints: BoxConstraints(maxHeight: maxHeight),
+          decoration: BoxDecoration(
+            color: isDark ? AppColors.darkSurface : AppColors.pureWhite,
+            borderRadius: BorderRadius.only(
+              topLeft: Radius.circular(
+                ResponsiveUtils.adaptiveBorderRadius(context, base: 24.0),
+              ),
+              topRight: Radius.circular(
+                ResponsiveUtils.adaptiveBorderRadius(context, base: 24.0),
+              ),
+            ),
+          ),
+          child: SafeArea(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                // Handle bar
+                Container(
+                  margin: EdgeInsets.only(
+                    top: ResponsiveUtils.adaptivePadding(context, mobile: 12.0),
+                  ),
+                  width: ResponsiveUtils.responsive(
+                    context,
+                    mobile: 40.0,
+                    tablet: 50.0,
+                    desktop: 60.0,
+                  ),
+                  height: 4,
+                  decoration: BoxDecoration(
+                    color: isDark
+                        ? AppColors.pureWhite.withOpacity(0.2)
+                        : AppColors.textSecondary.withOpacity(0.3),
+                    borderRadius: BorderRadius.circular(2),
+                  ),
+                ),
+                // Title
+                Padding(
+                  padding: EdgeInsets.all(
+                    ResponsiveUtils.adaptivePadding(context, mobile: 16.0),
+                  ),
+                  child: Text(
+                    'Sélectionner une traduction',
+                    style: TextStyle(
+                      color: isDark
+                          ? AppColors.pureWhite
+                          : AppColors.textPrimary,
+                      fontSize: ResponsiveUtils.adaptiveFontSize(
+                        context,
+                        mobile: 20,
+                        tablet: 22,
+                        desktop: 24,
+                      ),
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                ),
+                // Scrollable list of translations
+                Flexible(
+                  child: SingleChildScrollView(
+                    padding: EdgeInsets.symmetric(
+                      horizontal: ResponsiveUtils.adaptivePadding(
+                        context,
+                        mobile: 16.0,
+                        tablet: 20.0,
+                        desktop: 24.0,
+                      ),
+                      vertical: ResponsiveUtils.adaptivePadding(
+                        context,
+                        mobile: 8.0,
+                      ),
+                    ),
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        ...allTranslations.entries.map((entry) {
+                          final language = entry.key;
+                          final translations = entry.value;
+                          return Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Padding(
+                                padding: EdgeInsets.only(
+                                  bottom: ResponsiveUtils.adaptivePadding(
+                                    context,
+                                    mobile: 8.0,
+                                  ),
+                                  top: ResponsiveUtils.adaptivePadding(
+                                    context,
+                                    mobile: 12.0,
+                                  ),
+                                ),
+                                child: Text(
+                                  language,
+                                  style: TextStyle(
+                                    color: AppColors.luxuryGold,
+                                    fontSize: ResponsiveUtils.adaptiveFontSize(
+                                      context,
+                                      mobile: 14,
+                                      tablet: 15,
+                                      desktop: 16,
+                                    ),
+                                    fontWeight: FontWeight.w600,
+                                  ),
+                                ),
+                              ),
+                              ...translations.map((translation) {
+                                final isSelected =
+                                    selectedTranslation == translation['id'];
+                                return Material(
+                                  color: Colors.transparent,
+                                  child: InkWell(
+                                    onTap: () async {
+                                      HapticFeedback.mediumImpact();
+                                      await ref
+                                          .read(
+                                            translationEditionProvider.notifier,
+                                          )
+                                          .setTranslationEdition(
+                                            translation['id']!,
+                                          );
+                                      // Invalider le provider pour recharger avec la nouvelle traduction
+                                      ref.invalidate(
+                                        surahDetailProvider(
+                                          widget.surah.number,
+                                        ),
+                                      );
+                                      if (mounted) {
+                                        ScaffoldMessenger.of(
+                                          context,
+                                        ).showSnackBar(
+                                          SnackBar(
+                                            content: Text(
+                                              'Traduction: ${translation['name']}',
+                                            ),
+                                            backgroundColor:
+                                                AppColors.luxuryGold,
+                                            duration: const Duration(
+                                              seconds: 2,
+                                            ),
+                                          ),
+                                        );
+                                        Navigator.pop(context);
+                                      }
+                                    },
+                                    borderRadius: BorderRadius.circular(
+                                      ResponsiveUtils.adaptiveBorderRadius(
+                                        context,
+                                        base: 12.0,
+                                      ),
+                                    ),
+                                    child: Container(
+                                      padding: EdgeInsets.all(
+                                        ResponsiveUtils.adaptivePadding(
+                                          context,
+                                          mobile: 12.0,
+                                          tablet: 14.0,
+                                          desktop: 16.0,
+                                        ),
+                                      ),
+                                      margin: EdgeInsets.only(
+                                        bottom: ResponsiveUtils.adaptivePadding(
+                                          context,
+                                          mobile: 8.0,
+                                        ),
+                                      ),
+                                      decoration: BoxDecoration(
+                                        color: isSelected
+                                            ? (isDark
+                                                  ? AppColors.luxuryGold
+                                                        .withOpacity(0.2)
+                                                  : AppColors.luxuryGold
+                                                        .withOpacity(0.1))
+                                            : (isDark
+                                                  ? AppColors.darkCard
+                                                  : AppColors.ivory.withOpacity(
+                                                      0.5,
+                                                    )),
+                                        borderRadius: BorderRadius.circular(
+                                          ResponsiveUtils.adaptiveBorderRadius(
+                                            context,
+                                            base: 12.0,
+                                          ),
+                                        ),
+                                        border: Border.all(
+                                          color: isSelected
+                                              ? AppColors.luxuryGold
+                                                    .withOpacity(0.5)
+                                              : (isDark
+                                                    ? AppColors.pureWhite
+                                                          .withOpacity(0.1)
+                                                    : AppColors.deepBlue
+                                                          .withOpacity(0.1)),
+                                          width: isSelected ? 2 : 1,
+                                        ),
+                                      ),
+                                      child: Row(
+                                        children: [
+                                          if (isSelected)
+                                            Icon(
+                                              Icons.check_circle,
+                                              color: AppColors.luxuryGold,
+                                              size:
+                                                  ResponsiveUtils.adaptiveIconSize(
+                                                    context,
+                                                    base: 24.0,
+                                                  ),
+                                            ),
+                                          if (isSelected)
+                                            SizedBox(
+                                              width:
+                                                  ResponsiveUtils.adaptivePadding(
+                                                    context,
+                                                    mobile: 12.0,
+                                                  ),
+                                            ),
+                                          Expanded(
+                                            child: Column(
+                                              crossAxisAlignment:
+                                                  CrossAxisAlignment.start,
+                                              children: [
+                                                Text(
+                                                  translation['name'] ?? '',
+                                                  style: TextStyle(
+                                                    color: isDark
+                                                        ? AppColors.pureWhite
+                                                        : AppColors.textPrimary,
+                                                    fontSize:
+                                                        ResponsiveUtils.adaptiveFontSize(
+                                                          context,
+                                                          mobile: 16,
+                                                          tablet: 17,
+                                                          desktop: 18,
+                                                        ),
+                                                    fontWeight: isSelected
+                                                        ? FontWeight.w600
+                                                        : FontWeight.normal,
+                                                  ),
+                                                ),
+                                                if (translation['description'] !=
+                                                    null)
+                                                  SizedBox(
+                                                    height:
+                                                        ResponsiveUtils.adaptivePadding(
+                                                          context,
+                                                          mobile: 4.0,
+                                                        ),
+                                                  ),
+                                                if (translation['description'] !=
+                                                    null)
+                                                  Text(
+                                                    translation['description']!,
+                                                    style: TextStyle(
+                                                      color: isDark
+                                                          ? AppColors.pureWhite
+                                                                .withOpacity(
+                                                                  0.7,
+                                                                )
+                                                          : AppColors
+                                                                .textSecondary,
+                                                      fontSize:
+                                                          ResponsiveUtils.adaptiveFontSize(
+                                                            context,
+                                                            mobile: 13,
+                                                            tablet: 14,
+                                                            desktop: 15,
+                                                          ),
+                                                    ),
+                                                  ),
+                                              ],
+                                            ),
+                                          ),
+                                        ],
+                                      ),
+                                    ),
+                                  ),
+                                );
+                              }).toList(),
+                            ],
+                          );
+                        }).toList(),
+                        SizedBox(
+                          height: ResponsiveUtils.adaptivePadding(
+                            context,
+                            mobile: 12.0,
+                          ),
+                        ),
+                        TextButton(
+                          onPressed: () {
+                            HapticFeedback.lightImpact();
+                            Navigator.pop(context);
+                          },
+                          child: Text(
+                            'Annuler',
+                            style: TextStyle(
+                              color: isDark
+                                  ? AppColors.pureWhite.withOpacity(0.7)
+                                  : AppColors.textSecondary,
+                              fontSize: ResponsiveUtils.adaptiveFontSize(
+                                context,
+                                mobile: 16,
+                                tablet: 17,
+                                desktop: 18,
+                              ),
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        );
+      },
+    );
+  }
+
+  /// Afficher le sélecteur de répétition
+  void _showRepetitionSelector(
+    BuildContext context,
+    bool isDark,
+    WidgetRef ref,
+  ) {
+    HapticFeedback.lightImpact();
+    final selectedRepetition = ref.read(repetitionProvider);
+    final repetitionOptions = [
+      {'value': 'never', 'label': 'Never', 'icon': Icons.block},
+      {'value': 'once', 'label': 'Once', 'icon': Icons.repeat_one},
+      {'value': 'twice', 'label': 'Twice', 'icon': Icons.repeat},
+      {'value': 'thrice', 'label': '3 times', 'icon': Icons.repeat},
+      {'value': 'infinite', 'label': 'Infinite', 'icon': Icons.all_inclusive},
+    ];
+
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (context) {
+        final screenHeight = MediaQuery.of(context).size.height;
+        final maxHeight = screenHeight * 0.6;
+
+        return Container(
+          constraints: BoxConstraints(maxHeight: maxHeight),
+          decoration: BoxDecoration(
+            color: isDark ? AppColors.darkSurface : AppColors.pureWhite,
+            borderRadius: BorderRadius.only(
+              topLeft: Radius.circular(
+                ResponsiveUtils.adaptiveBorderRadius(context, base: 24.0),
+              ),
+              topRight: Radius.circular(
+                ResponsiveUtils.adaptiveBorderRadius(context, base: 24.0),
+              ),
+            ),
+          ),
+          child: SafeArea(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                // Handle bar
+                Container(
+                  margin: EdgeInsets.only(
+                    top: ResponsiveUtils.adaptivePadding(context, mobile: 12.0),
+                  ),
+                  width: ResponsiveUtils.responsive(
+                    context,
+                    mobile: 40.0,
+                    tablet: 50.0,
+                    desktop: 60.0,
+                  ),
+                  height: 4,
+                  decoration: BoxDecoration(
+                    color: isDark
+                        ? AppColors.pureWhite.withOpacity(0.2)
+                        : AppColors.textSecondary.withOpacity(0.3),
+                    borderRadius: BorderRadius.circular(2),
+                  ),
+                ),
+                // Title
+                Padding(
+                  padding: EdgeInsets.all(
+                    ResponsiveUtils.adaptivePadding(context, mobile: 16.0),
+                  ),
+                  child: Text(
+                    'Repetition',
+                    style: TextStyle(
+                      color: isDark
+                          ? AppColors.pureWhite
+                          : AppColors.textPrimary,
+                      fontSize: ResponsiveUtils.adaptiveFontSize(
+                        context,
+                        mobile: 20,
+                        tablet: 22,
+                        desktop: 24,
+                      ),
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                ),
+                // Scrollable list of repetition options
+                Flexible(
+                  child: SingleChildScrollView(
+                    padding: EdgeInsets.symmetric(
+                      horizontal: ResponsiveUtils.adaptivePadding(
+                        context,
+                        mobile: 16.0,
+                        tablet: 20.0,
+                        desktop: 24.0,
+                      ),
+                      vertical: ResponsiveUtils.adaptivePadding(
+                        context,
+                        mobile: 8.0,
+                      ),
+                    ),
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        ...repetitionOptions.map((option) {
+                          final isSelected =
+                              selectedRepetition == option['value'];
+                          return Material(
+                            color: Colors.transparent,
+                            child: InkWell(
+                              onTap: () async {
+                                HapticFeedback.mediumImpact();
+                                await ref
+                                    .read(repetitionProvider.notifier)
+                                    .setRepetition(option['value'] as String);
+                                if (mounted) {
+                                  ScaffoldMessenger.of(context).showSnackBar(
+                                    SnackBar(
+                                      content: Text(
+                                        'Repetition: ${option['label']}',
+                                      ),
+                                      backgroundColor: AppColors.luxuryGold,
+                                      duration: const Duration(seconds: 1),
+                                      behavior: SnackBarBehavior.floating,
+                                    ),
+                                  );
+                                  Navigator.pop(context);
+                                }
+                              },
+                              borderRadius: BorderRadius.circular(
+                                ResponsiveUtils.adaptiveBorderRadius(
+                                  context,
+                                  base: 12.0,
+                                ),
+                              ),
+                              child: Container(
+                                padding: EdgeInsets.all(
+                                  ResponsiveUtils.adaptivePadding(
+                                    context,
+                                    mobile: 12.0,
+                                    tablet: 14.0,
+                                    desktop: 16.0,
+                                  ),
+                                ),
+                                margin: EdgeInsets.only(
+                                  bottom: ResponsiveUtils.adaptivePadding(
+                                    context,
+                                    mobile: 8.0,
+                                  ),
+                                ),
+                                decoration: BoxDecoration(
+                                  color: isSelected
+                                      ? (isDark
+                                            ? AppColors.luxuryGold.withOpacity(
+                                                0.2,
+                                              )
+                                            : AppColors.luxuryGold.withOpacity(
+                                                0.1,
+                                              ))
+                                      : (isDark
+                                            ? AppColors.darkCard
+                                            : AppColors.ivory.withOpacity(0.5)),
+                                  borderRadius: BorderRadius.circular(
+                                    ResponsiveUtils.adaptiveBorderRadius(
+                                      context,
+                                      base: 12.0,
+                                    ),
+                                  ),
+                                  border: Border.all(
+                                    color: isSelected
+                                        ? AppColors.luxuryGold.withOpacity(0.5)
+                                        : (isDark
+                                              ? AppColors.pureWhite.withOpacity(
+                                                  0.1,
+                                                )
+                                              : AppColors.deepBlue.withOpacity(
+                                                  0.1,
+                                                )),
+                                    width: isSelected ? 2 : 1,
+                                  ),
+                                ),
+                                child: Row(
+                                  children: [
+                                    Icon(
+                                      option['icon'] as IconData,
+                                      color: isSelected
+                                          ? AppColors.luxuryGold
+                                          : (isDark
+                                                ? AppColors.pureWhite
+                                                      .withOpacity(0.7)
+                                                : AppColors.textSecondary),
+                                      size: ResponsiveUtils.adaptiveIconSize(
+                                        context,
+                                        base: 24.0,
+                                      ),
+                                    ),
+                                    SizedBox(
+                                      width: ResponsiveUtils.adaptivePadding(
+                                        context,
+                                        mobile: 12.0,
+                                      ),
+                                    ),
+                                    Expanded(
+                                      child: Text(
+                                        option['label'] as String,
+                                        style: TextStyle(
+                                          color: isDark
+                                              ? AppColors.pureWhite
+                                              : AppColors.textPrimary,
+                                          fontSize:
+                                              ResponsiveUtils.adaptiveFontSize(
+                                                context,
+                                                mobile: 16,
+                                                tablet: 17,
+                                                desktop: 18,
+                                              ),
+                                          fontWeight: isSelected
+                                              ? FontWeight.w600
+                                              : FontWeight.normal,
+                                        ),
+                                      ),
+                                    ),
+                                    if (isSelected)
+                                      Icon(
+                                        Icons.check_circle,
+                                        color: AppColors.luxuryGold,
+                                        size: ResponsiveUtils.adaptiveIconSize(
+                                          context,
+                                          base: 24.0,
+                                        ),
+                                      ),
+                                  ],
+                                ),
+                              ),
+                            ),
+                          );
+                        }).toList(),
+                        SizedBox(
+                          height: ResponsiveUtils.adaptivePadding(
+                            context,
+                            mobile: 12.0,
+                          ),
+                        ),
+                        TextButton(
+                          onPressed: () {
+                            HapticFeedback.lightImpact();
+                            Navigator.pop(context);
+                          },
+                          child: Text(
+                            'Annuler',
+                            style: TextStyle(
+                              color: isDark
+                                  ? AppColors.pureWhite.withOpacity(0.7)
+                                  : AppColors.textSecondary,
+                              fontSize: ResponsiveUtils.adaptiveFontSize(
+                                context,
+                                mobile: 16,
+                                tablet: 17,
+                                desktop: 18,
+                              ),
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        );
+      },
+    );
+  }
+
+  /// Afficher le sélecteur de script/édition arabe
+  void _showScriptSelector(BuildContext context, bool isDark, WidgetRef ref) {
+    HapticFeedback.lightImpact();
+    final selectedScript = ref.read(arabicScriptProvider);
+
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (context) {
+        final screenHeight = MediaQuery.of(context).size.height;
+        final maxHeight = screenHeight * 0.85;
+
+        return Container(
+          constraints: BoxConstraints(maxHeight: maxHeight),
+          decoration: BoxDecoration(
+            color: isDark ? AppColors.darkSurface : AppColors.pureWhite,
+            borderRadius: BorderRadius.only(
+              topLeft: Radius.circular(
+                ResponsiveUtils.adaptiveBorderRadius(context, base: 24.0),
+              ),
+              topRight: Radius.circular(
+                ResponsiveUtils.adaptiveBorderRadius(context, base: 24.0),
+              ),
+            ),
+          ),
+          child: SafeArea(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                // Handle bar
+                Container(
+                  margin: EdgeInsets.only(
+                    top: ResponsiveUtils.adaptivePadding(context, mobile: 12.0),
+                  ),
+                  width: ResponsiveUtils.responsive(
+                    context,
+                    mobile: 40.0,
+                    tablet: 50.0,
+                    desktop: 60.0,
+                  ),
+                  height: 4,
+                  decoration: BoxDecoration(
+                    color: isDark
+                        ? AppColors.pureWhite.withOpacity(0.2)
+                        : AppColors.textSecondary.withOpacity(0.3),
+                    borderRadius: BorderRadius.circular(2),
+                  ),
+                ),
+                // Title
+                Padding(
+                  padding: EdgeInsets.all(
+                    ResponsiveUtils.adaptivePadding(context, mobile: 16.0),
+                  ),
+                  child: Text(
+                    'Sélectionner un script/Édition',
+                    style: TextStyle(
+                      color: isDark
+                          ? AppColors.pureWhite
+                          : AppColors.textPrimary,
+                      fontSize: ResponsiveUtils.adaptiveFontSize(
+                        context,
+                        mobile: 20,
+                        tablet: 22,
+                        desktop: 24,
+                      ),
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                ),
+                // Scrollable list of scripts - Use Consumer to get cached data
+                Flexible(
+                  child: Consumer(
+                    builder: (context, ref, child) {
+                      final arabicScriptsAsync = ref.watch(
+                        arabicScriptEditionsProvider,
+                      );
+                      return arabicScriptsAsync.when(
+                        data: (editions) {
+                          if (editions.isEmpty) {
+                            return Center(
+                              child: Padding(
+                                padding: EdgeInsets.all(
+                                  ResponsiveUtils.adaptivePadding(
+                                    context,
+                                    mobile: 24.0,
+                                  ),
+                                ),
+                                child: Text(
+                                  'Aucune édition disponible',
+                                  style: TextStyle(
+                                    color: isDark
+                                        ? AppColors.pureWhite.withOpacity(0.7)
+                                        : AppColors.textSecondary,
+                                    fontSize: ResponsiveUtils.adaptiveFontSize(
+                                      context,
+                                      mobile: 16,
+                                      tablet: 17,
+                                      desktop: 18,
+                                    ),
+                                  ),
+                                ),
+                              ),
+                            );
+                          }
+
+                          return SingleChildScrollView(
+                            padding: EdgeInsets.symmetric(
+                              horizontal: ResponsiveUtils.adaptivePadding(
+                                context,
+                                mobile: 16.0,
+                                tablet: 20.0,
+                                desktop: 24.0,
+                              ),
+                              vertical: ResponsiveUtils.adaptivePadding(
+                                context,
+                                mobile: 8.0,
+                              ),
+                            ),
+                            child: Column(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                ...editions.map((edition) {
+                                  final isSelected =
+                                      selectedScript == edition.identifier;
+                                  return Material(
+                                    color: Colors.transparent,
+                                    child: InkWell(
+                                      onTap: () {
+                                        HapticFeedback.mediumImpact();
+                                        ref
+                                            .read(arabicScriptProvider.notifier)
+                                            .updateScript(edition.identifier);
+                                        // Invalider le provider pour recharger avec la nouvelle édition
+                                        ref.invalidate(
+                                          surahDetailProvider(
+                                            widget.surah.number,
+                                          ),
+                                        );
+                                        setState(
+                                          () {},
+                                        ); // Rebuild to apply new script
+                                        if (mounted) {
+                                          Navigator.pop(context);
+                                        }
+                                      },
+                                      borderRadius: BorderRadius.circular(
+                                        ResponsiveUtils.adaptiveBorderRadius(
+                                          context,
+                                          base: 12.0,
+                                        ),
+                                      ),
+                                      child: Container(
+                                        padding: EdgeInsets.all(
+                                          ResponsiveUtils.adaptivePadding(
+                                            context,
+                                            mobile: 12.0,
+                                            tablet: 14.0,
+                                            desktop: 16.0,
+                                          ),
+                                        ),
+                                        margin: EdgeInsets.only(
+                                          bottom:
+                                              ResponsiveUtils.adaptivePadding(
+                                                context,
+                                                mobile: 8.0,
+                                              ),
+                                        ),
+                                        decoration: BoxDecoration(
+                                          color: isSelected
+                                              ? (isDark
+                                                    ? AppColors.luxuryGold
+                                                          .withOpacity(0.2)
+                                                    : AppColors.luxuryGold
+                                                          .withOpacity(0.1))
+                                              : (isDark
+                                                    ? AppColors.darkCard
+                                                    : AppColors.ivory
+                                                          .withOpacity(0.5)),
+                                          borderRadius: BorderRadius.circular(
+                                            ResponsiveUtils.adaptiveBorderRadius(
+                                              context,
+                                              base: 12.0,
+                                            ),
+                                          ),
+                                          border: Border.all(
+                                            color: isSelected
+                                                ? AppColors.luxuryGold
+                                                      .withOpacity(0.5)
+                                                : (isDark
+                                                      ? AppColors.pureWhite
+                                                            .withOpacity(0.1)
+                                                      : AppColors.deepBlue
+                                                            .withOpacity(0.1)),
+                                            width: isSelected ? 2 : 1,
+                                          ),
+                                        ),
+                                        child: Row(
+                                          children: [
+                                            if (isSelected)
+                                              Icon(
+                                                Icons.check_circle,
+                                                color: AppColors.luxuryGold,
+                                                size:
+                                                    ResponsiveUtils.adaptiveIconSize(
+                                                      context,
+                                                      base: 24.0,
+                                                    ),
+                                              ),
+                                            if (isSelected)
+                                              SizedBox(
+                                                width:
+                                                    ResponsiveUtils.adaptivePadding(
+                                                      context,
+                                                      mobile: 12.0,
+                                                    ),
+                                              ),
+                                            Expanded(
+                                              child: Column(
+                                                crossAxisAlignment:
+                                                    CrossAxisAlignment.start,
+                                                children: [
+                                                  Text(
+                                                    edition
+                                                            .englishName
+                                                            .isNotEmpty
+                                                        ? edition.englishName
+                                                        : edition.name,
+                                                    style: TextStyle(
+                                                      color: isDark
+                                                          ? AppColors.pureWhite
+                                                          : AppColors
+                                                                .textPrimary,
+                                                      fontSize:
+                                                          ResponsiveUtils.adaptiveFontSize(
+                                                            context,
+                                                            mobile: 16,
+                                                            tablet: 17,
+                                                            desktop: 18,
+                                                          ),
+                                                      fontWeight: isSelected
+                                                          ? FontWeight.w600
+                                                          : FontWeight.normal,
+                                                    ),
+                                                  ),
+                                                  if (edition.name.isNotEmpty &&
+                                                      edition.name !=
+                                                          edition.englishName)
+                                                    SizedBox(
+                                                      height:
+                                                          ResponsiveUtils.adaptivePadding(
+                                                            context,
+                                                            mobile: 4.0,
+                                                          ),
+                                                    ),
+                                                  if (edition.name.isNotEmpty &&
+                                                      edition.name !=
+                                                          edition.englishName)
+                                                    Text(
+                                                      edition.name,
+                                                      style: TextStyle(
+                                                        fontFamily: 'Cairo',
+                                                        color: isDark
+                                                            ? AppColors
+                                                                  .pureWhite
+                                                                  .withOpacity(
+                                                                    0.7,
+                                                                  )
+                                                            : AppColors
+                                                                  .textSecondary,
+                                                        fontSize:
+                                                            ResponsiveUtils.adaptiveFontSize(
+                                                              context,
+                                                              mobile: 14,
+                                                              tablet: 15,
+                                                              desktop: 16,
+                                                            ),
+                                                      ),
+                                                      textDirection:
+                                                          TextDirection.rtl,
+                                                    ),
+                                                ],
+                                              ),
+                                            ),
+                                          ],
+                                        ),
+                                      ),
+                                    ),
+                                  );
+                                }).toList(),
+                                SizedBox(
+                                  height: ResponsiveUtils.adaptivePadding(
+                                    context,
+                                    mobile: 12.0,
+                                  ),
+                                ),
+                                TextButton(
+                                  onPressed: () {
+                                    HapticFeedback.lightImpact();
+                                    Navigator.pop(context);
+                                  },
+                                  child: Text(
+                                    'Annuler',
+                                    style: TextStyle(
+                                      color: isDark
+                                          ? AppColors.pureWhite.withOpacity(0.7)
+                                          : AppColors.textSecondary,
+                                      fontSize:
+                                          ResponsiveUtils.adaptiveFontSize(
+                                            context,
+                                            mobile: 16,
+                                            tablet: 17,
+                                            desktop: 18,
+                                          ),
+                                    ),
+                                  ),
+                                ),
+                              ],
+                            ),
+                          );
+                        },
+                        loading: () => Center(
+                          child: Padding(
+                            padding: EdgeInsets.all(
+                              ResponsiveUtils.adaptivePadding(
+                                context,
+                                mobile: 24.0,
+                              ),
+                            ),
+                            child: CircularProgressIndicator(
+                              color: isDark
+                                  ? AppColors.luxuryGold
+                                  : AppColors.deepBlue,
+                            ),
+                          ),
+                        ),
+                        error: (error, stack) => Center(
+                          child: Padding(
+                            padding: EdgeInsets.all(
+                              ResponsiveUtils.adaptivePadding(
+                                context,
+                                mobile: 24.0,
+                              ),
+                            ),
+                            child: Column(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                Icon(
+                                  Icons.error_outline,
+                                  size: 48,
+                                  color: AppColors.error,
+                                ),
+                                SizedBox(
+                                  height: ResponsiveUtils.adaptivePadding(
+                                    context,
+                                    mobile: 12.0,
+                                  ),
+                                ),
+                                Text(
+                                  'Erreur de chargement',
+                                  style: TextStyle(
+                                    color: isDark
+                                        ? AppColors.pureWhite
+                                        : AppColors.textPrimary,
+                                    fontSize: ResponsiveUtils.adaptiveFontSize(
+                                      context,
+                                      mobile: 16,
+                                      tablet: 17,
+                                      desktop: 18,
+                                    ),
+                                  ),
+                                ),
+                                SizedBox(
+                                  height: ResponsiveUtils.adaptivePadding(
+                                    context,
+                                    mobile: 12.0,
+                                  ),
+                                ),
+                                TextButton(
+                                  onPressed: () {
+                                    ref.invalidate(
+                                      arabicScriptEditionsProvider,
+                                    );
+                                  },
+                                  child: const Text('Réessayer'),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ),
+                      );
+                    },
+                  ),
+                ),
+              ],
+            ),
+          ),
+        );
+      },
+    );
+  }
+
+  /// Télécharger l'audio de la sourate pour l'écoute hors ligne
+  Future<void> _downloadSurahAudio(bool isDark) async {
+    HapticFeedback.lightImpact();
+
+    // Afficher un dialog de confirmation
+    final shouldDownload = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(
+            ResponsiveUtils.adaptiveBorderRadius(context, base: 20.0),
+          ),
+        ),
+        backgroundColor: isDark ? AppColors.darkSurface : AppColors.pureWhite,
+        title: Text(
+          'Télécharger l\'audio',
+          style: TextStyle(
+            color: isDark ? AppColors.pureWhite : AppColors.textPrimary,
+            fontSize: ResponsiveUtils.adaptiveFontSize(
+              context,
+              mobile: 18,
+              tablet: 20,
+              desktop: 22,
+            ),
+            fontWeight: FontWeight.bold,
+          ),
+        ),
+        content: Text(
+          'Voulez-vous télécharger l\'audio de "${widget.surah.name}" pour l\'écouter hors ligne ?',
+          style: TextStyle(
+            color: isDark
+                ? AppColors.pureWhite.withOpacity(0.8)
+                : AppColors.textSecondary,
+            fontSize: ResponsiveUtils.adaptiveFontSize(
+              context,
+              mobile: 14,
+              tablet: 15,
+              desktop: 16,
+            ),
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: Text(
+              'Annuler',
+              style: TextStyle(
+                color: isDark
+                    ? AppColors.pureWhite.withOpacity(0.7)
+                    : AppColors.textSecondary,
+              ),
+            ),
+          ),
+          ElevatedButton(
+            onPressed: () => Navigator.pop(context, true),
+            style: ElevatedButton.styleFrom(
+              backgroundColor: AppColors.luxuryGold,
+              foregroundColor: AppColors.pureWhite,
+            ),
+            child: const Text('Télécharger'),
+          ),
+        ],
+      ),
+    );
+
+    if (shouldDownload != true || !mounted) return;
+
+    try {
+      // Afficher un indicateur de progression
+      showDialog(
+        context: context,
+        barrierDismissible: false,
+        builder: (context) => AlertDialog(
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(
+              ResponsiveUtils.adaptiveBorderRadius(context, base: 20.0),
+            ),
+          ),
+          backgroundColor: isDark ? AppColors.darkSurface : AppColors.pureWhite,
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const CircularProgressIndicator(
+                valueColor: AlwaysStoppedAnimation<Color>(AppColors.luxuryGold),
+              ),
+              SizedBox(
+                height: ResponsiveUtils.adaptivePadding(context, mobile: 16.0),
+              ),
+              Text(
+                'Téléchargement en cours...',
+                style: TextStyle(
+                  color: isDark ? AppColors.pureWhite : AppColors.textPrimary,
+                  fontSize: ResponsiveUtils.adaptiveFontSize(
+                    context,
+                    mobile: 14,
+                    tablet: 15,
+                    desktop: 16,
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+      );
+
+      // Récupérer les URLs audio
+      final audioUrlsAsync = ref.read(
+        surahAudioUrlsProvider(widget.surah.number),
+      );
+      final audioUrls = await audioUrlsAsync
+          .whenData((urls) => urls)
+          .when(
+            data: (urls) => urls,
+            loading: () => <String>[],
+            error: (_, __) => <String>[],
+          );
+
+      if (audioUrls.isEmpty) {
+        if (mounted) {
+          Navigator.pop(context); // Fermer le dialog de progression
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: const Text('Aucun audio disponible pour cette sourate'),
+              backgroundColor: AppColors.error,
+              duration: const Duration(seconds: 2),
+            ),
+          );
+        }
+        return;
+      }
+
+      // Télécharger les fichiers audio
+      // Note: Pour une implémentation complète, il faudrait utiliser
+      // un package comme dio ou http pour télécharger et sauvegarder
+      // les fichiers localement avec path_provider
+      // Pour l'instant, on simule le téléchargement en mettant en cache
+      final audioService = ref.read(audioServiceProvider);
+      final selectedReciter = ref.read(selectedReciterPersistentProvider);
+
+      // Forcer le rechargement pour mettre en cache
+      await audioService.getSurahAudioUrls(
+        widget.surah.number,
+        reciter: selectedReciter,
+        forceNetwork: true,
+      );
+
+      if (mounted) {
+        Navigator.pop(context); // Fermer le dialog de progression
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Row(
+              children: [
+                Icon(Icons.check_circle, color: AppColors.pureWhite, size: 20),
+                SizedBox(
+                  width: ResponsiveUtils.adaptivePadding(context, mobile: 12.0),
+                ),
+                Expanded(
+                  child: Text(
+                    'Audio de "${widget.surah.name}" mis en cache pour l\'écoute hors ligne',
+                    style: TextStyle(
+                      color: AppColors.pureWhite,
+                      fontSize: ResponsiveUtils.adaptiveFontSize(
+                        context,
+                        mobile: 14,
+                        tablet: 15,
+                        desktop: 16,
+                      ),
+                    ),
+                  ),
+                ),
+              ],
+            ),
+            backgroundColor: AppColors.luxuryGold,
+            duration: const Duration(seconds: 3),
+            behavior: SnackBarBehavior.floating,
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(
+                ResponsiveUtils.adaptiveBorderRadius(context, base: 12.0),
+              ),
+            ),
+          ),
+        );
+      }
+    } catch (e) {
+      debugPrint('Error downloading audio: $e');
+      if (mounted) {
+        Navigator.pop(context); // Fermer le dialog de progression
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Erreur de téléchargement: $e'),
+            backgroundColor: AppColors.error,
+            duration: const Duration(seconds: 2),
+          ),
+        );
+      }
+    }
   }
 
   /// Afficher le sélecteur de sourate avec recherche et navigation
@@ -3081,8 +4580,12 @@ class _SurahDetailScreenState extends ConsumerState<SurahDetailScreen>
       context: context,
       isScrollControlled: true,
       backgroundColor: Colors.transparent,
-      builder: (context) => _SurahSelectorBottomSheet(
+      useSafeArea: true,
+      isDismissible: true,
+      enableDrag: true,
+      builder: (context) => _JuzSurahAyahSelectorBottomSheet(
         currentSurahNumber: widget.surah.number,
+        currentAyahNumber: null, // Can be enhanced to track current ayah
         isDark: isDark,
         onSurahSelected: (surah, ayahNumber) {
           Navigator.pop(context); // Fermer le bottom sheet
@@ -3116,11 +4619,10 @@ class _SurahDetailScreenState extends ConsumerState<SurahDetailScreen>
                         begin: begin,
                         end: end,
                       ).chain(CurveTween(curve: curve));
-                      var offsetAnimation = animation.drive(tween);
 
                       return SlideTransition(
-                        position: offsetAnimation,
-                        child: FadeTransition(opacity: animation, child: child),
+                        position: animation.drive(tween),
+                        child: child,
                       );
                     },
                 transitionDuration: const Duration(milliseconds: 300),
@@ -3133,7 +4635,2859 @@ class _SurahDetailScreenState extends ConsumerState<SurahDetailScreen>
   }
 }
 
-/// Bottom Sheet pour sélectionner une sourate
+/// Widget pour le contenu du panneau de paramètres avec onglets
+class _SettingsPanelContent extends ConsumerStatefulWidget {
+  final bool isDark;
+  final int surahNumber;
+  final Function(BuildContext, bool, WidgetRef) showScriptSelector;
+  final Function(BuildContext, bool, WidgetRef) showReciterSelector;
+  final Function(BuildContext, bool, WidgetRef) showTranslationSelector;
+  final Function(BuildContext, bool, WidgetRef) showRepetitionSelector;
+  final Function(bool) downloadSurahAudio;
+  final bool isAutoScrollEnabled;
+  final bool showTranslation;
+  final Function(bool) onAutoScrollChanged;
+  final Function(bool) onTranslationChanged;
+
+  const _SettingsPanelContent({
+    required this.isDark,
+    required this.surahNumber,
+    required this.showScriptSelector,
+    required this.showReciterSelector,
+    required this.showTranslationSelector,
+    required this.showRepetitionSelector,
+    required this.downloadSurahAudio,
+    required this.isAutoScrollEnabled,
+    required this.showTranslation,
+    required this.onAutoScrollChanged,
+    required this.onTranslationChanged,
+  });
+
+  @override
+  ConsumerState<_SettingsPanelContent> createState() =>
+      _SettingsPanelContentState();
+}
+
+class _SettingsPanelContentState extends ConsumerState<_SettingsPanelContent>
+    with SingleTickerProviderStateMixin {
+  late TabController _tabController;
+
+  @override
+  void initState() {
+    super.initState();
+    _tabController = TabController(length: 3, vsync: this);
+  }
+
+  @override
+  void dispose() {
+    _tabController.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final screenHeight = MediaQuery.of(context).size.height;
+    final maxHeight = ResponsiveUtils.responsive(
+      context,
+      mobile: screenHeight * 0.7,
+      tablet: screenHeight * 0.65,
+      desktop: screenHeight * 0.6,
+    );
+
+    return AnimatedContainer(
+      duration: const Duration(milliseconds: 300),
+      curve: Curves.easeOutCubic,
+      constraints: BoxConstraints(maxHeight: maxHeight),
+      decoration: BoxDecoration(
+        color: widget.isDark ? AppColors.darkSurface : AppColors.pureWhite,
+        borderRadius: BorderRadius.only(
+          topLeft: Radius.circular(
+            ResponsiveUtils.adaptiveBorderRadius(context, base: 24.0),
+          ),
+          topRight: Radius.circular(
+            ResponsiveUtils.adaptiveBorderRadius(context, base: 24.0),
+          ),
+        ),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withOpacity(0.2),
+            blurRadius: 20,
+            spreadRadius: 5,
+            offset: const Offset(0, -5),
+          ),
+        ],
+      ),
+      child: SafeArea(
+        child: Column(
+          children: [
+            // Handle bar
+            Container(
+              margin: EdgeInsets.only(
+                top: ResponsiveUtils.adaptivePadding(context, mobile: 12.0),
+              ),
+              width: ResponsiveUtils.responsive(
+                context,
+                mobile: 40.0,
+                tablet: 50.0,
+                desktop: 60.0,
+              ),
+              height: 4,
+              decoration: BoxDecoration(
+                color: widget.isDark
+                    ? AppColors.pureWhite.withOpacity(0.2)
+                    : AppColors.textSecondary.withOpacity(0.3),
+                borderRadius: BorderRadius.circular(2),
+              ),
+            ),
+            // Header avec titre et bouton fermer - Compact
+            Padding(
+              padding: EdgeInsets.symmetric(
+                horizontal: ResponsiveUtils.adaptivePadding(
+                  context,
+                  mobile: 16.0,
+                  tablet: 20.0,
+                  desktop: 24.0,
+                ),
+                vertical: ResponsiveUtils.adaptivePadding(
+                  context,
+                  mobile: 12.0,
+                  tablet: 14.0,
+                  desktop: 16.0,
+                ),
+              ),
+              child: Row(
+                children: [
+                  Expanded(
+                    child: Text(
+                      'Paramètres',
+                      style: TextStyle(
+                        color: widget.isDark
+                            ? AppColors.pureWhite
+                            : AppColors.textPrimary,
+                        fontSize: ResponsiveUtils.adaptiveFontSize(
+                          context,
+                          mobile: 20,
+                          tablet: 22,
+                          desktop: 24,
+                        ),
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                  ),
+                  Material(
+                    color: Colors.transparent,
+                    child: InkWell(
+                      onTap: () {
+                        HapticFeedback.lightImpact();
+                        Navigator.pop(context);
+                      },
+                      borderRadius: BorderRadius.circular(20),
+                      child: Container(
+                        padding: EdgeInsets.all(
+                          ResponsiveUtils.adaptivePadding(context, mobile: 6.0),
+                        ),
+                        decoration: BoxDecoration(
+                          color: widget.isDark
+                              ? AppColors.pureWhite.withOpacity(0.1)
+                              : AppColors.deepBlue.withOpacity(0.1),
+                          shape: BoxShape.circle,
+                        ),
+                        child: Icon(
+                          Icons.close_rounded,
+                          color: widget.isDark
+                              ? AppColors.pureWhite
+                              : AppColors.textPrimary,
+                          size: ResponsiveUtils.adaptiveIconSize(
+                            context,
+                            base: 20.0,
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            // Tabs - Compact
+            Container(
+              margin: EdgeInsets.symmetric(
+                horizontal: ResponsiveUtils.adaptivePadding(
+                  context,
+                  mobile: 16.0,
+                  tablet: 20.0,
+                  desktop: 24.0,
+                ),
+              ),
+              decoration: BoxDecoration(
+                color: widget.isDark
+                    ? AppColors.darkCard
+                    : AppColors.ivory.withOpacity(0.5),
+                borderRadius: BorderRadius.circular(
+                  ResponsiveUtils.adaptiveBorderRadius(context, base: 10.0),
+                ),
+              ),
+              child: TabBar(
+                controller: _tabController,
+                indicator: BoxDecoration(
+                  color: AppColors.luxuryGold,
+                  borderRadius: BorderRadius.circular(
+                    ResponsiveUtils.adaptiveBorderRadius(context, base: 8.0),
+                  ),
+                ),
+                indicatorSize: TabBarIndicatorSize.tab,
+                labelColor: AppColors.pureWhite,
+                unselectedLabelColor: widget.isDark
+                    ? AppColors.pureWhite.withOpacity(0.6)
+                    : AppColors.textSecondary,
+                labelStyle: TextStyle(
+                  fontSize: ResponsiveUtils.adaptiveFontSize(
+                    context,
+                    mobile: 13,
+                    tablet: 14,
+                    desktop: 15,
+                  ),
+                  fontWeight: FontWeight.w600,
+                ),
+                unselectedLabelStyle: TextStyle(
+                  fontSize: ResponsiveUtils.adaptiveFontSize(
+                    context,
+                    mobile: 13,
+                    tablet: 14,
+                    desktop: 15,
+                  ),
+                  fontWeight: FontWeight.normal,
+                ),
+                dividerColor: Colors.transparent,
+                tabs: const [
+                  Tab(text: 'Display'),
+                  Tab(text: 'Text'),
+                  Tab(text: 'Audio'),
+                ],
+              ),
+            ),
+            SizedBox(
+              height: ResponsiveUtils.adaptivePadding(context, mobile: 12.0),
+            ),
+            // Tab content - Use Flexible for proper constraints
+            Flexible(
+              child: TabBarView(
+                controller: _tabController,
+                physics: const ClampingScrollPhysics(),
+                children: [
+                  _buildDisplayTab(context),
+                  _buildTextTab(context),
+                  _buildAudioTab(context),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildDisplayTab(BuildContext context) {
+    return SingleChildScrollView(
+      physics: const ClampingScrollPhysics(),
+      padding: EdgeInsets.symmetric(
+        horizontal: ResponsiveUtils.adaptivePadding(
+          context,
+          mobile: 16.0,
+          tablet: 20.0,
+          desktop: 24.0,
+        ),
+        vertical: ResponsiveUtils.adaptivePadding(context, mobile: 4.0),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          // Themes section - Compact
+          Text(
+            'Themes',
+            style: TextStyle(
+              color: widget.isDark
+                  ? AppColors.pureWhite
+                  : AppColors.textPrimary,
+              fontSize: ResponsiveUtils.adaptiveFontSize(
+                context,
+                mobile: 16,
+                tablet: 17,
+                desktop: 18,
+              ),
+              fontWeight: FontWeight.w600,
+            ),
+          ),
+          SizedBox(
+            height: ResponsiveUtils.adaptivePadding(context, mobile: 10.0),
+          ),
+          // Themes layout - Modern and Dark only
+          Consumer(
+            builder: (context, ref, child) {
+              final currentThemeMode = ref.watch(themeModeProvider);
+              final isSystemMode = currentThemeMode == ThemeMode.system;
+              final isLightMode = currentThemeMode == ThemeMode.light;
+              final isDarkMode = currentThemeMode == ThemeMode.dark;
+
+              return Row(
+                children: [
+                  Expanded(
+                    child: _buildThemeCard(
+                      context,
+                      'Modern',
+                      AppColors.deepBlue,
+                      isLightMode || (isSystemMode && !widget.isDark),
+                      ThemeMode.light,
+                      ref,
+                    ),
+                  ),
+                  SizedBox(
+                    width: ResponsiveUtils.adaptivePadding(
+                      context,
+                      mobile: 12.0,
+                      tablet: 16.0,
+                      desktop: 20.0,
+                    ),
+                  ),
+                  Expanded(
+                    child: _buildThemeCard(
+                      context,
+                      'Dark',
+                      AppColors.darkBackground,
+                      isDarkMode || (isSystemMode && widget.isDark),
+                      ThemeMode.dark,
+                      ref,
+                    ),
+                  ),
+                ],
+              );
+            },
+          ),
+          SizedBox(
+            height: ResponsiveUtils.adaptivePadding(context, mobile: 20.0),
+          ),
+          // Text Size section - Improved
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              Text(
+                'Text Size',
+                style: TextStyle(
+                  color: widget.isDark
+                      ? AppColors.pureWhite
+                      : AppColors.textPrimary,
+                  fontSize: ResponsiveUtils.adaptiveFontSize(
+                    context,
+                    mobile: 16,
+                    tablet: 17,
+                    desktop: 18,
+                  ),
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+              Consumer(
+                builder: (context, ref, child) {
+                  final fontSize = ref.watch(arabicFontSizeProvider);
+                  return Container(
+                    padding: EdgeInsets.symmetric(
+                      horizontal: ResponsiveUtils.adaptivePadding(
+                        context,
+                        mobile: 10.0,
+                      ),
+                      vertical: ResponsiveUtils.adaptivePadding(
+                        context,
+                        mobile: 4.0,
+                      ),
+                    ),
+                    decoration: BoxDecoration(
+                      color: AppColors.luxuryGold.withOpacity(0.15),
+                      borderRadius: BorderRadius.circular(
+                        ResponsiveUtils.adaptiveBorderRadius(
+                          context,
+                          base: 8.0,
+                        ),
+                      ),
+                    ),
+                    child: Text(
+                      '${fontSize.toInt()}',
+                      style: TextStyle(
+                        color: AppColors.luxuryGold,
+                        fontSize: ResponsiveUtils.adaptiveFontSize(
+                          context,
+                          mobile: 14,
+                          tablet: 15,
+                          desktop: 16,
+                        ),
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                  );
+                },
+              ),
+            ],
+          ),
+          SizedBox(
+            height: ResponsiveUtils.adaptivePadding(context, mobile: 12.0),
+          ),
+          Consumer(
+            builder: (context, ref, child) {
+              final fontSize = ref.watch(arabicFontSizeProvider);
+              return Container(
+                padding: EdgeInsets.symmetric(
+                  vertical: ResponsiveUtils.adaptivePadding(
+                    context,
+                    mobile: 12.0,
+                  ),
+                  horizontal: ResponsiveUtils.adaptivePadding(
+                    context,
+                    mobile: 16.0,
+                  ),
+                ),
+                decoration: BoxDecoration(
+                  color: widget.isDark
+                      ? AppColors.darkCard
+                      : AppColors.ivory.withOpacity(0.3),
+                  borderRadius: BorderRadius.circular(
+                    ResponsiveUtils.adaptiveBorderRadius(context, base: 12.0),
+                  ),
+                ),
+                child: Column(
+                  children: [
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        Text(
+                          'A',
+                          style: TextStyle(
+                            color: widget.isDark
+                                ? AppColors.pureWhite.withOpacity(0.5)
+                                : AppColors.textSecondary,
+                            fontSize: ResponsiveUtils.adaptiveFontSize(
+                              context,
+                              mobile: 16,
+                              tablet: 17,
+                              desktop: 18,
+                            ),
+                          ),
+                        ),
+                        Text(
+                          'A',
+                          style: TextStyle(
+                            color: widget.isDark
+                                ? AppColors.pureWhite
+                                : AppColors.textPrimary,
+                            fontSize: ResponsiveUtils.adaptiveFontSize(
+                              context,
+                              mobile: 24,
+                              tablet: 26,
+                              desktop: 28,
+                            ),
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
+                      ],
+                    ),
+                    SizedBox(
+                      height: ResponsiveUtils.adaptivePadding(
+                        context,
+                        mobile: 8.0,
+                      ),
+                    ),
+                    Slider(
+                      value: fontSize,
+                      min: 20.0,
+                      max: 40.0,
+                      divisions: 20,
+                      activeColor: AppColors.luxuryGold,
+                      inactiveColor: widget.isDark
+                          ? AppColors.pureWhite.withOpacity(0.2)
+                          : AppColors.deepBlue.withOpacity(0.2),
+                      onChanged: (value) {
+                        HapticFeedback.selectionClick();
+                        ref
+                            .read(arabicFontSizeProvider.notifier)
+                            .updateSize(value);
+                      },
+                    ),
+                  ],
+                ),
+              );
+            },
+          ),
+          SizedBox(
+            height: ResponsiveUtils.adaptivePadding(context, mobile: 20.0),
+          ),
+          // Reading mode section - Improved
+          Text(
+            'Reading mode',
+            style: TextStyle(
+              color: widget.isDark
+                  ? AppColors.pureWhite
+                  : AppColors.textPrimary,
+              fontSize: ResponsiveUtils.adaptiveFontSize(
+                context,
+                mobile: 16,
+                tablet: 17,
+                desktop: 18,
+              ),
+              fontWeight: FontWeight.w600,
+            ),
+          ),
+          SizedBox(
+            height: ResponsiveUtils.adaptivePadding(context, mobile: 12.0),
+          ),
+          Consumer(
+            builder: (context, ref, child) {
+              final currentReadingMode = ref.watch(readingModeProvider);
+
+              return Row(
+                children: [
+                  Expanded(
+                    child: _buildReadingModeCard(
+                      context,
+                      'List',
+                      Icons.list_rounded,
+                      currentReadingMode == 'list',
+                      'list',
+                      ref,
+                    ),
+                  ),
+                  SizedBox(
+                    width: ResponsiveUtils.adaptivePadding(
+                      context,
+                      mobile: 12.0,
+                      tablet: 16.0,
+                      desktop: 20.0,
+                    ),
+                  ),
+                  Expanded(
+                    child: _buildReadingModeCard(
+                      context,
+                      'Page',
+                      Icons.description_rounded,
+                      currentReadingMode == 'page',
+                      'page',
+                      ref,
+                    ),
+                  ),
+                ],
+              );
+            },
+          ),
+          SizedBox(
+            height: ResponsiveUtils.adaptivePadding(context, mobile: 24.0),
+          ),
+          // Auto-scroll toggle - Improved
+          Container(
+            padding: EdgeInsets.symmetric(
+              horizontal: ResponsiveUtils.adaptivePadding(
+                context,
+                mobile: 16.0,
+              ),
+              vertical: ResponsiveUtils.adaptivePadding(context, mobile: 14.0),
+            ),
+            decoration: BoxDecoration(
+              color: widget.isDark
+                  ? AppColors.darkCard
+                  : AppColors.ivory.withOpacity(0.3),
+              borderRadius: BorderRadius.circular(
+                ResponsiveUtils.adaptiveBorderRadius(context, base: 12.0),
+              ),
+              border: Border.all(
+                color: widget.isAutoScrollEnabled
+                    ? AppColors.luxuryGold.withOpacity(0.3)
+                    : (widget.isDark
+                          ? AppColors.pureWhite.withOpacity(0.1)
+                          : AppColors.deepBlue.withOpacity(0.1)),
+                width: widget.isAutoScrollEnabled ? 1.5 : 1,
+              ),
+            ),
+            child: Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                Flexible(
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Container(
+                        padding: EdgeInsets.all(
+                          ResponsiveUtils.adaptivePadding(context, mobile: 6.0),
+                        ),
+                        decoration: BoxDecoration(
+                          color: widget.isAutoScrollEnabled
+                              ? AppColors.luxuryGold.withOpacity(0.2)
+                              : (widget.isDark
+                                    ? AppColors.pureWhite.withOpacity(0.1)
+                                    : AppColors.deepBlue.withOpacity(0.1)),
+                          borderRadius: BorderRadius.circular(
+                            ResponsiveUtils.adaptiveBorderRadius(
+                              context,
+                              base: 8.0,
+                            ),
+                          ),
+                        ),
+                        child: Icon(
+                          Icons.swap_vertical_circle_rounded,
+                          color: widget.isAutoScrollEnabled
+                              ? AppColors.luxuryGold
+                              : (widget.isDark
+                                    ? AppColors.pureWhite.withOpacity(0.6)
+                                    : AppColors.textSecondary),
+                          size: ResponsiveUtils.adaptiveIconSize(
+                            context,
+                            base: 20.0,
+                          ),
+                        ),
+                      ),
+                      SizedBox(
+                        width: ResponsiveUtils.adaptivePadding(
+                          context,
+                          mobile: 12.0,
+                        ),
+                      ),
+                      Flexible(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Text(
+                              'Auto-scroll',
+                              style: TextStyle(
+                                color: widget.isDark
+                                    ? AppColors.pureWhite
+                                    : AppColors.textPrimary,
+                                fontSize: ResponsiveUtils.adaptiveFontSize(
+                                  context,
+                                  mobile: 15,
+                                  tablet: 16,
+                                  desktop: 17,
+                                ),
+                                fontWeight: FontWeight.w600,
+                              ),
+                            ),
+                            SizedBox(
+                              height: ResponsiveUtils.adaptivePadding(
+                                context,
+                                mobile: 2.0,
+                              ),
+                            ),
+                            Text(
+                              'Follow audio playback',
+                              style: TextStyle(
+                                color: widget.isDark
+                                    ? AppColors.pureWhite.withOpacity(0.6)
+                                    : AppColors.textSecondary,
+                                fontSize: ResponsiveUtils.adaptiveFontSize(
+                                  context,
+                                  mobile: 12,
+                                  tablet: 13,
+                                  desktop: 14,
+                                ),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                Switch(
+                  value: widget.isAutoScrollEnabled,
+                  onChanged: widget.onAutoScrollChanged,
+                  activeColor: AppColors.luxuryGold,
+                ),
+              ],
+            ),
+          ),
+          SizedBox(
+            height: ResponsiveUtils.adaptivePadding(context, mobile: 16.0),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildThemeCard(
+    BuildContext context,
+    String name,
+    Color backgroundColor,
+    bool isSelected,
+    ThemeMode themeMode,
+    WidgetRef ref,
+  ) {
+    return AnimatedContainer(
+      duration: const Duration(milliseconds: 200),
+      curve: Curves.easeInOut,
+      child: Material(
+        color: Colors.transparent,
+        child: InkWell(
+          onTap: () {
+            HapticFeedback.mediumImpact();
+            // Switch theme
+            ref.read(themeModeProvider.notifier).setThemeMode(themeMode);
+            if (mounted) {
+              ScaffoldMessenger.of(context).showSnackBar(
+                SnackBar(
+                  content: Text('Theme "$name" selected'),
+                  backgroundColor: AppColors.luxuryGold,
+                  duration: const Duration(seconds: 1),
+                  behavior: SnackBarBehavior.floating,
+                ),
+              );
+            }
+          },
+          borderRadius: BorderRadius.circular(
+            ResponsiveUtils.adaptiveBorderRadius(context, base: 10.0),
+          ),
+          child: AnimatedContainer(
+            duration: const Duration(milliseconds: 200),
+            curve: Curves.easeInOut,
+            padding: EdgeInsets.symmetric(
+              vertical: ResponsiveUtils.adaptivePadding(context, mobile: 8.0),
+              horizontal: ResponsiveUtils.adaptivePadding(context, mobile: 6.0),
+            ),
+            decoration: BoxDecoration(
+              color: backgroundColor,
+              borderRadius: BorderRadius.circular(
+                ResponsiveUtils.adaptiveBorderRadius(context, base: 10.0),
+              ),
+              border: Border.all(
+                color: isSelected
+                    ? AppColors.luxuryGold
+                    : (widget.isDark
+                          ? AppColors.pureWhite.withOpacity(0.1)
+                          : AppColors.deepBlue.withOpacity(0.1)),
+                width: isSelected ? 2 : 1,
+              ),
+              boxShadow: isSelected
+                  ? [
+                      BoxShadow(
+                        color: AppColors.luxuryGold.withOpacity(0.3),
+                        blurRadius: 6,
+                        spreadRadius: 0.5,
+                        offset: const Offset(0, 2),
+                      ),
+                    ]
+                  : null,
+            ),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                if (isSelected)
+                  Icon(
+                    Icons.check_circle,
+                    color: AppColors.luxuryGold,
+                    size: ResponsiveUtils.adaptiveIconSize(context, base: 16.0),
+                  ),
+                if (isSelected)
+                  SizedBox(
+                    height: ResponsiveUtils.adaptivePadding(
+                      context,
+                      mobile: 4.0,
+                    ),
+                  ),
+                Text(
+                  'بِسْمِ اللهِ',
+                  style: TextStyle(
+                    fontFamily: 'Cairo',
+                    fontSize: ResponsiveUtils.adaptiveFontSize(
+                      context,
+                      mobile: 12,
+                      tablet: 13,
+                      desktop: 14,
+                    ),
+                    color: backgroundColor == AppColors.darkBackground
+                        ? AppColors.pureWhite
+                        : AppColors.textPrimary,
+                  ),
+                  textDirection: TextDirection.rtl,
+                ),
+                SizedBox(
+                  height: ResponsiveUtils.adaptivePadding(context, mobile: 4.0),
+                ),
+                Text(
+                  name,
+                  style: TextStyle(
+                    color: backgroundColor == AppColors.darkBackground
+                        ? AppColors.pureWhite
+                        : AppColors.textPrimary,
+                    fontSize: ResponsiveUtils.adaptiveFontSize(
+                      context,
+                      mobile: 11,
+                      tablet: 12,
+                      desktop: 13,
+                    ),
+                    fontWeight: isSelected ? FontWeight.w600 : FontWeight.w500,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildReadingModeCard(
+    BuildContext context,
+    String name,
+    IconData icon,
+    bool isSelected,
+    String modeValue,
+    WidgetRef ref,
+  ) {
+    return AnimatedContainer(
+      duration: const Duration(milliseconds: 200),
+      curve: Curves.easeInOut,
+      child: Material(
+        color: Colors.transparent,
+        child: InkWell(
+          onTap: () {
+            HapticFeedback.mediumImpact();
+            ref.read(readingModeProvider.notifier).setReadingMode(modeValue);
+            if (mounted) {
+              ScaffoldMessenger.of(context).showSnackBar(
+                SnackBar(
+                  content: Text('Reading mode "$name" selected'),
+                  backgroundColor: AppColors.luxuryGold,
+                  duration: const Duration(seconds: 1),
+                  behavior: SnackBarBehavior.floating,
+                ),
+              );
+            }
+          },
+          borderRadius: BorderRadius.circular(
+            ResponsiveUtils.adaptiveBorderRadius(context, base: 10.0),
+          ),
+          child: AnimatedContainer(
+            duration: const Duration(milliseconds: 200),
+            curve: Curves.easeInOut,
+            padding: EdgeInsets.symmetric(
+              vertical: ResponsiveUtils.adaptivePadding(context, mobile: 10.0),
+              horizontal: ResponsiveUtils.adaptivePadding(context, mobile: 8.0),
+            ),
+            decoration: BoxDecoration(
+              color: isSelected
+                  ? (widget.isDark
+                        ? AppColors.luxuryGold.withOpacity(0.15)
+                        : AppColors.luxuryGold.withOpacity(0.1))
+                  : (widget.isDark ? AppColors.darkCard : AppColors.pureWhite),
+              borderRadius: BorderRadius.circular(
+                ResponsiveUtils.adaptiveBorderRadius(context, base: 10.0),
+              ),
+              border: Border.all(
+                color: isSelected
+                    ? AppColors.luxuryGold
+                    : (widget.isDark
+                          ? AppColors.pureWhite.withOpacity(0.1)
+                          : AppColors.deepBlue.withOpacity(0.1)),
+                width: isSelected ? 2 : 1,
+              ),
+              boxShadow: isSelected
+                  ? [
+                      BoxShadow(
+                        color: AppColors.luxuryGold.withOpacity(0.3),
+                        blurRadius: 6,
+                        spreadRadius: 0.5,
+                        offset: const Offset(0, 2),
+                      ),
+                    ]
+                  : null,
+            ),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                AnimatedContainer(
+                  duration: const Duration(milliseconds: 200),
+                  padding: EdgeInsets.all(
+                    ResponsiveUtils.adaptivePadding(context, mobile: 6.0),
+                  ),
+                  decoration: BoxDecoration(
+                    color: isSelected
+                        ? AppColors.luxuryGold.withOpacity(0.2)
+                        : (widget.isDark
+                              ? AppColors.pureWhite.withOpacity(0.1)
+                              : AppColors.deepBlue.withOpacity(0.1)),
+                    shape: BoxShape.circle,
+                  ),
+                  child: Icon(
+                    icon,
+                    color: isSelected
+                        ? AppColors.luxuryGold
+                        : (widget.isDark
+                              ? AppColors.pureWhite.withOpacity(0.7)
+                              : AppColors.textSecondary),
+                    size: ResponsiveUtils.adaptiveIconSize(context, base: 24.0),
+                  ),
+                ),
+                SizedBox(
+                  height: ResponsiveUtils.adaptivePadding(context, mobile: 6.0),
+                ),
+                Text(
+                  name,
+                  style: TextStyle(
+                    color: widget.isDark
+                        ? AppColors.pureWhite
+                        : AppColors.textPrimary,
+                    fontSize: ResponsiveUtils.adaptiveFontSize(
+                      context,
+                      mobile: 12,
+                      tablet: 13,
+                      desktop: 14,
+                    ),
+                    fontWeight: isSelected
+                        ? FontWeight.w600
+                        : FontWeight.normal,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildTextTab(BuildContext context) {
+    return SingleChildScrollView(
+      physics: const ClampingScrollPhysics(),
+      padding: EdgeInsets.symmetric(
+        horizontal: ResponsiveUtils.adaptivePadding(
+          context,
+          mobile: 16.0,
+          tablet: 20.0,
+          desktop: 24.0,
+        ),
+        vertical: ResponsiveUtils.adaptivePadding(context, mobile: 4.0),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          // Script option section - Compact
+          Text(
+            'Script option',
+            style: TextStyle(
+              color: widget.isDark
+                  ? AppColors.pureWhite
+                  : AppColors.textPrimary,
+              fontSize: ResponsiveUtils.adaptiveFontSize(
+                context,
+                mobile: 16,
+                tablet: 17,
+                desktop: 18,
+              ),
+              fontWeight: FontWeight.w600,
+            ),
+          ),
+          SizedBox(
+            height: ResponsiveUtils.adaptivePadding(context, mobile: 10.0),
+          ),
+          Consumer(
+            builder: (context, ref, child) {
+              final selectedScript = ref.watch(arabicScriptProvider);
+              final arabicScriptsAsync = ref.watch(
+                arabicScriptEditionsProvider,
+              );
+
+              return arabicScriptsAsync.when(
+                data: (editions) {
+                  // Show first 4 popular scripts horizontally
+                  final displayEditions = editions.take(4).toList();
+                  return Column(
+                    children: [
+                      SizedBox(
+                        height: ResponsiveUtils.responsive(
+                          context,
+                          mobile: 100.0,
+                          tablet: 110.0,
+                          desktop: 120.0,
+                        ),
+                        child: ListView.builder(
+                          scrollDirection: Axis.horizontal,
+                          itemCount: displayEditions.length,
+                          itemBuilder: (context, index) {
+                            final edition = displayEditions[index];
+                            final isSelected =
+                                selectedScript == edition.identifier;
+                            return Padding(
+                              padding: EdgeInsets.only(
+                                right: ResponsiveUtils.adaptivePadding(
+                                  context,
+                                  mobile: 8.0,
+                                ),
+                              ),
+                              child: SizedBox(
+                                width: ResponsiveUtils.responsive(
+                                  context,
+                                  mobile: 100.0,
+                                  tablet: 110.0,
+                                  desktop: 120.0,
+                                ),
+                                child: _buildScriptCard(
+                                  context,
+                                  edition,
+                                  isSelected,
+                                  ref,
+                                ),
+                              ),
+                            );
+                          },
+                        ),
+                      ),
+                      if (editions.length > 4)
+                        Padding(
+                          padding: EdgeInsets.only(
+                            top: ResponsiveUtils.adaptivePadding(
+                              context,
+                              mobile: 10.0,
+                            ),
+                          ),
+                          child: Material(
+                            color: Colors.transparent,
+                            child: InkWell(
+                              onTap: () {
+                                HapticFeedback.lightImpact();
+                                Navigator.pop(context);
+                                widget.showScriptSelector(
+                                  context,
+                                  widget.isDark,
+                                  ref,
+                                );
+                              },
+                              borderRadius: BorderRadius.circular(
+                                ResponsiveUtils.adaptiveBorderRadius(
+                                  context,
+                                  base: 10.0,
+                                ),
+                              ),
+                              child: Container(
+                                padding: EdgeInsets.symmetric(
+                                  horizontal: ResponsiveUtils.adaptivePadding(
+                                    context,
+                                    mobile: 12.0,
+                                  ),
+                                  vertical: ResponsiveUtils.adaptivePadding(
+                                    context,
+                                    mobile: 8.0,
+                                  ),
+                                ),
+                                decoration: BoxDecoration(
+                                  color: AppColors.luxuryGold.withOpacity(0.1),
+                                  borderRadius: BorderRadius.circular(
+                                    ResponsiveUtils.adaptiveBorderRadius(
+                                      context,
+                                      base: 10.0,
+                                    ),
+                                  ),
+                                  border: Border.all(
+                                    color: AppColors.luxuryGold.withOpacity(
+                                      0.3,
+                                    ),
+                                    width: 1,
+                                  ),
+                                ),
+                                child: Row(
+                                  mainAxisAlignment: MainAxisAlignment.center,
+                                  mainAxisSize: MainAxisSize.min,
+                                  children: [
+                                    Text(
+                                      'Voir toutes',
+                                      style: TextStyle(
+                                        color: AppColors.luxuryGold,
+                                        fontSize:
+                                            ResponsiveUtils.adaptiveFontSize(
+                                              context,
+                                              mobile: 13,
+                                              tablet: 14,
+                                              desktop: 15,
+                                            ),
+                                        fontWeight: FontWeight.w600,
+                                      ),
+                                    ),
+                                    SizedBox(
+                                      width: ResponsiveUtils.adaptivePadding(
+                                        context,
+                                        mobile: 6.0,
+                                      ),
+                                    ),
+                                    Icon(
+                                      Icons.arrow_forward_ios,
+                                      color: AppColors.luxuryGold,
+                                      size: ResponsiveUtils.adaptiveIconSize(
+                                        context,
+                                        base: 12.0,
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                              ),
+                            ),
+                          ),
+                        ),
+                    ],
+                  );
+                },
+                loading: () => Center(
+                  child: Padding(
+                    padding: EdgeInsets.all(
+                      ResponsiveUtils.adaptivePadding(context, mobile: 20.0),
+                    ),
+                    child: CircularProgressIndicator(
+                      color: AppColors.luxuryGold,
+                    ),
+                  ),
+                ),
+                error: (_, __) => Center(
+                  child: Padding(
+                    padding: EdgeInsets.all(
+                      ResponsiveUtils.adaptivePadding(context, mobile: 20.0),
+                    ),
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Icon(
+                          Icons.error_outline,
+                          size: 40,
+                          color: AppColors.error,
+                        ),
+                        SizedBox(
+                          height: ResponsiveUtils.adaptivePadding(
+                            context,
+                            mobile: 8.0,
+                          ),
+                        ),
+                        Text(
+                          'Erreur de chargement',
+                          style: TextStyle(
+                            color: widget.isDark
+                                ? AppColors.pureWhite
+                                : AppColors.textPrimary,
+                            fontSize: ResponsiveUtils.adaptiveFontSize(
+                              context,
+                              mobile: 14,
+                              tablet: 15,
+                              desktop: 16,
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              );
+            },
+          ),
+          SizedBox(
+            height: ResponsiveUtils.adaptivePadding(context, mobile: 20.0),
+          ),
+          // Show Tajweed colours - Compact
+          Consumer(
+            builder: (context, ref, child) {
+              final showTajweed = ref.watch(tajweedColorsProvider);
+              return Container(
+                padding: EdgeInsets.symmetric(
+                  horizontal: ResponsiveUtils.adaptivePadding(
+                    context,
+                    mobile: 12.0,
+                  ),
+                  vertical: ResponsiveUtils.adaptivePadding(
+                    context,
+                    mobile: 10.0,
+                  ),
+                ),
+                decoration: BoxDecoration(
+                  color: widget.isDark
+                      ? AppColors.darkCard
+                      : AppColors.ivory.withOpacity(0.3),
+                  borderRadius: BorderRadius.circular(
+                    ResponsiveUtils.adaptiveBorderRadius(context, base: 10.0),
+                  ),
+                ),
+                child: Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    Row(
+                      children: [
+                        Text(
+                          'Show Tajweed colours',
+                          style: TextStyle(
+                            color: widget.isDark
+                                ? AppColors.pureWhite
+                                : AppColors.textPrimary,
+                            fontSize: ResponsiveUtils.adaptiveFontSize(
+                              context,
+                              mobile: 15,
+                              tablet: 16,
+                              desktop: 17,
+                            ),
+                          ),
+                        ),
+                        SizedBox(
+                          width: ResponsiveUtils.adaptivePadding(
+                            context,
+                            mobile: 6.0,
+                          ),
+                        ),
+                        Icon(
+                          Icons.info_outline,
+                          size: 14,
+                          color: widget.isDark
+                              ? AppColors.pureWhite.withOpacity(0.6)
+                              : AppColors.textSecondary,
+                        ),
+                      ],
+                    ),
+                    Switch(
+                      value: showTajweed,
+                      onChanged: (value) {
+                        HapticFeedback.selectionClick();
+                        ref.read(tajweedColorsProvider.notifier).toggle(value);
+                        if (mounted) {
+                          ScaffoldMessenger.of(context).showSnackBar(
+                            SnackBar(
+                              content: Text(
+                                value
+                                    ? 'Tajweed colours enabled'
+                                    : 'Tajweed colours disabled',
+                              ),
+                              backgroundColor: AppColors.luxuryGold,
+                              duration: const Duration(seconds: 1),
+                              behavior: SnackBarBehavior.floating,
+                            ),
+                          );
+                        }
+                      },
+                      activeColor: AppColors.luxuryGold,
+                    ),
+                  ],
+                ),
+              );
+            },
+          ),
+          SizedBox(
+            height: ResponsiveUtils.adaptivePadding(context, mobile: 20.0),
+          ),
+          // Translation section - Compact
+          Text(
+            'Translation',
+            style: TextStyle(
+              color: widget.isDark
+                  ? AppColors.pureWhite
+                  : AppColors.textPrimary,
+              fontSize: ResponsiveUtils.adaptiveFontSize(
+                context,
+                mobile: 16,
+                tablet: 17,
+                desktop: 18,
+              ),
+              fontWeight: FontWeight.w600,
+            ),
+          ),
+          SizedBox(
+            height: ResponsiveUtils.adaptivePadding(context, mobile: 10.0),
+          ),
+          Container(
+            padding: EdgeInsets.symmetric(
+              horizontal: ResponsiveUtils.adaptivePadding(
+                context,
+                mobile: 12.0,
+              ),
+              vertical: ResponsiveUtils.adaptivePadding(context, mobile: 10.0),
+            ),
+            decoration: BoxDecoration(
+              color: widget.isDark
+                  ? AppColors.darkCard
+                  : AppColors.ivory.withOpacity(0.3),
+              borderRadius: BorderRadius.circular(
+                ResponsiveUtils.adaptiveBorderRadius(context, base: 10.0),
+              ),
+            ),
+            child: Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                Expanded(
+                  child: Text(
+                    'Show translation',
+                    style: TextStyle(
+                      color: widget.isDark
+                          ? AppColors.pureWhite
+                          : AppColors.textPrimary,
+                      fontSize: ResponsiveUtils.adaptiveFontSize(
+                        context,
+                        mobile: 15,
+                        tablet: 16,
+                        desktop: 17,
+                      ),
+                      fontWeight: FontWeight.w500,
+                    ),
+                  ),
+                ),
+                Switch(
+                  value: widget.showTranslation,
+                  onChanged: widget.onTranslationChanged,
+                  activeColor: AppColors.luxuryGold,
+                ),
+              ],
+            ),
+          ),
+          SizedBox(
+            height: ResponsiveUtils.adaptivePadding(context, mobile: 10.0),
+          ),
+          Consumer(
+            builder: (context, ref, child) {
+              final selectedTranslation = ref.watch(translationEditionProvider);
+              final translationName = AvailableTranslations.getName(
+                selectedTranslation,
+              );
+              final translationLanguage =
+                  AvailableTranslations.all.entries
+                      .expand((entry) => entry.value)
+                      .firstWhere(
+                        (t) => t['id'] == selectedTranslation,
+                        orElse: () => {'language': 'Français'},
+                      )['language'] ??
+                  'Français';
+
+              return Material(
+                color: Colors.transparent,
+                child: InkWell(
+                  onTap: () {
+                    HapticFeedback.lightImpact();
+                    Navigator.pop(context);
+                    widget.showTranslationSelector(context, widget.isDark, ref);
+                  },
+                  borderRadius: BorderRadius.circular(
+                    ResponsiveUtils.adaptiveBorderRadius(context, base: 10.0),
+                  ),
+                  child: Container(
+                    padding: EdgeInsets.symmetric(
+                      horizontal: ResponsiveUtils.adaptivePadding(
+                        context,
+                        mobile: 12.0,
+                      ),
+                      vertical: ResponsiveUtils.adaptivePadding(
+                        context,
+                        mobile: 10.0,
+                      ),
+                    ),
+                    decoration: BoxDecoration(
+                      color: widget.isDark
+                          ? AppColors.darkCard
+                          : AppColors.ivory.withOpacity(0.3),
+                      borderRadius: BorderRadius.circular(
+                        ResponsiveUtils.adaptiveBorderRadius(
+                          context,
+                          base: 10.0,
+                        ),
+                      ),
+                    ),
+                    child: Row(
+                      children: [
+                        Icon(
+                          Icons.language,
+                          color: AppColors.luxuryGold,
+                          size: ResponsiveUtils.adaptiveIconSize(
+                            context,
+                            base: 18.0,
+                          ),
+                        ),
+                        SizedBox(
+                          width: ResponsiveUtils.adaptivePadding(
+                            context,
+                            mobile: 10.0,
+                          ),
+                        ),
+                        Expanded(
+                          child: Text(
+                            '$translationLanguage: $translationName',
+                            style: TextStyle(
+                              color: widget.isDark
+                                  ? AppColors.pureWhite
+                                  : AppColors.textPrimary,
+                              fontSize: ResponsiveUtils.adaptiveFontSize(
+                                context,
+                                mobile: 14,
+                                tablet: 15,
+                                desktop: 16,
+                              ),
+                            ),
+                          ),
+                        ),
+                        Icon(
+                          Icons.arrow_forward_ios,
+                          size: 12,
+                          color: widget.isDark
+                              ? AppColors.pureWhite.withOpacity(0.5)
+                              : AppColors.textSecondary,
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              );
+            },
+          ),
+          SizedBox(
+            height: ResponsiveUtils.adaptivePadding(context, mobile: 20.0),
+          ),
+          // Highlight Ayah section - Compact
+          Consumer(
+            builder: (context, ref, child) {
+              final highlightAyah = ref.watch(highlightAyahProvider);
+              return Container(
+                padding: EdgeInsets.symmetric(
+                  horizontal: ResponsiveUtils.adaptivePadding(
+                    context,
+                    mobile: 12.0,
+                  ),
+                  vertical: ResponsiveUtils.adaptivePadding(
+                    context,
+                    mobile: 10.0,
+                  ),
+                ),
+                decoration: BoxDecoration(
+                  color: widget.isDark
+                      ? AppColors.darkCard
+                      : AppColors.ivory.withOpacity(0.3),
+                  borderRadius: BorderRadius.circular(
+                    ResponsiveUtils.adaptiveBorderRadius(context, base: 10.0),
+                  ),
+                ),
+                child: Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    Row(
+                      children: [
+                        Icon(
+                          Icons.highlight_alt,
+                          size: ResponsiveUtils.adaptiveIconSize(
+                            context,
+                            base: 18.0,
+                          ),
+                          color: highlightAyah
+                              ? AppColors.luxuryGold
+                              : (widget.isDark
+                                    ? AppColors.pureWhite.withOpacity(0.6)
+                                    : AppColors.textSecondary),
+                        ),
+                        SizedBox(
+                          width: ResponsiveUtils.adaptivePadding(
+                            context,
+                            mobile: 10.0,
+                          ),
+                        ),
+                        Text(
+                          'Highlight Ayah',
+                          style: TextStyle(
+                            color: widget.isDark
+                                ? AppColors.pureWhite
+                                : AppColors.textPrimary,
+                            fontSize: ResponsiveUtils.adaptiveFontSize(
+                              context,
+                              mobile: 15,
+                              tablet: 16,
+                              desktop: 17,
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                    Switch(
+                      value: highlightAyah,
+                      onChanged: (value) {
+                        HapticFeedback.selectionClick();
+                        ref.read(highlightAyahProvider.notifier).toggle(value);
+                        if (mounted) {
+                          ScaffoldMessenger.of(context).showSnackBar(
+                            SnackBar(
+                              content: Text(
+                                value
+                                    ? 'Ayah highlighting enabled'
+                                    : 'Ayah highlighting disabled',
+                              ),
+                              backgroundColor: AppColors.luxuryGold,
+                              duration: const Duration(seconds: 1),
+                              behavior: SnackBarBehavior.floating,
+                            ),
+                          );
+                        }
+                      },
+                      activeColor: AppColors.luxuryGold,
+                    ),
+                  ],
+                ),
+              );
+            },
+          ),
+          SizedBox(
+            height: ResponsiveUtils.adaptivePadding(context, mobile: 16.0),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildScriptCard(
+    BuildContext context,
+    EditionModel edition,
+    bool isSelected,
+    WidgetRef ref,
+  ) {
+    return AnimatedContainer(
+      duration: const Duration(milliseconds: 200),
+      curve: Curves.easeInOut,
+      child: Material(
+        color: Colors.transparent,
+        child: InkWell(
+          onTap: () {
+            HapticFeedback.mediumImpact();
+            ref
+                .read(arabicScriptProvider.notifier)
+                .updateScript(edition.identifier);
+            ref.invalidate(surahDetailProvider(widget.surahNumber));
+            if (mounted) {
+              ScaffoldMessenger.of(context).showSnackBar(
+                SnackBar(
+                  content: Text(
+                    'Script "${edition.englishName.isNotEmpty ? edition.englishName : edition.name}" sélectionné',
+                  ),
+                  backgroundColor: AppColors.luxuryGold,
+                  duration: const Duration(seconds: 1),
+                  behavior: SnackBarBehavior.floating,
+                ),
+              );
+            }
+          },
+          borderRadius: BorderRadius.circular(
+            ResponsiveUtils.adaptiveBorderRadius(context, base: 10.0),
+          ),
+          child: AnimatedContainer(
+            duration: const Duration(milliseconds: 200),
+            curve: Curves.easeInOut,
+            padding: EdgeInsets.symmetric(
+              vertical: ResponsiveUtils.adaptivePadding(context, mobile: 8.0),
+              horizontal: ResponsiveUtils.adaptivePadding(context, mobile: 6.0),
+            ),
+            decoration: BoxDecoration(
+              color: isSelected
+                  ? (widget.isDark
+                        ? AppColors.luxuryGold.withOpacity(0.15)
+                        : AppColors.luxuryGold.withOpacity(0.1))
+                  : (widget.isDark ? AppColors.darkCard : AppColors.pureWhite),
+              borderRadius: BorderRadius.circular(
+                ResponsiveUtils.adaptiveBorderRadius(context, base: 10.0),
+              ),
+              border: Border.all(
+                color: isSelected
+                    ? AppColors.luxuryGold
+                    : (widget.isDark
+                          ? AppColors.pureWhite.withOpacity(0.1)
+                          : AppColors.deepBlue.withOpacity(0.1)),
+                width: isSelected ? 2 : 1,
+              ),
+              boxShadow: isSelected
+                  ? [
+                      BoxShadow(
+                        color: AppColors.luxuryGold.withOpacity(0.3),
+                        blurRadius: 6,
+                        spreadRadius: 0.5,
+                        offset: const Offset(0, 2),
+                      ),
+                    ]
+                  : null,
+            ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.center,
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                if (isSelected)
+                  Icon(
+                    Icons.check_circle,
+                    color: AppColors.luxuryGold,
+                    size: ResponsiveUtils.adaptiveIconSize(context, base: 14.0),
+                  ),
+                if (isSelected)
+                  SizedBox(
+                    height: ResponsiveUtils.adaptivePadding(
+                      context,
+                      mobile: 4.0,
+                    ),
+                  ),
+                Text(
+                  'بِسْمِ اللهِ',
+                  style: TextStyle(
+                    fontFamily: 'Cairo',
+                    fontSize: ResponsiveUtils.adaptiveFontSize(
+                      context,
+                      mobile: 14,
+                      tablet: 15,
+                      desktop: 16,
+                    ),
+                    color: widget.isDark
+                        ? AppColors.pureWhite
+                        : AppColors.textPrimary,
+                  ),
+                  textDirection: TextDirection.rtl,
+                  textAlign: TextAlign.center,
+                ),
+                SizedBox(
+                  height: ResponsiveUtils.adaptivePadding(context, mobile: 4.0),
+                ),
+                Text(
+                  edition.englishName.isNotEmpty
+                      ? edition.englishName
+                      : edition.name,
+                  style: TextStyle(
+                    color: widget.isDark
+                        ? AppColors.pureWhite
+                        : AppColors.textPrimary,
+                    fontSize: ResponsiveUtils.adaptiveFontSize(
+                      context,
+                      mobile: 10,
+                      tablet: 11,
+                      desktop: 12,
+                    ),
+                    fontWeight: isSelected
+                        ? FontWeight.w600
+                        : FontWeight.normal,
+                  ),
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
+                  textAlign: TextAlign.center,
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildAudioTab(BuildContext context) {
+    return SingleChildScrollView(
+      physics: const ClampingScrollPhysics(),
+      padding: EdgeInsets.symmetric(
+        horizontal: ResponsiveUtils.adaptivePadding(
+          context,
+          mobile: 16.0,
+          tablet: 20.0,
+          desktop: 24.0,
+        ),
+        vertical: ResponsiveUtils.adaptivePadding(context, mobile: 4.0),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          // Quran reciter section - Compact
+          Text(
+            'Quran reciter',
+            style: TextStyle(
+              color: widget.isDark
+                  ? AppColors.pureWhite
+                  : AppColors.textPrimary,
+              fontSize: ResponsiveUtils.adaptiveFontSize(
+                context,
+                mobile: 16,
+                tablet: 17,
+                desktop: 18,
+              ),
+              fontWeight: FontWeight.w600,
+            ),
+          ),
+          SizedBox(
+            height: ResponsiveUtils.adaptivePadding(context, mobile: 10.0),
+          ),
+          Consumer(
+            builder: (context, ref, child) {
+              final selectedReciter = ref.watch(
+                selectedReciterPersistentProvider,
+              );
+              final popularReciters = AudioService.popularReciters;
+              final reciter = popularReciters.firstWhere(
+                (r) => r['id'] == selectedReciter,
+                orElse: () => popularReciters.first,
+              );
+
+              return Material(
+                color: Colors.transparent,
+                child: InkWell(
+                  onTap: () {
+                    HapticFeedback.lightImpact();
+                    Navigator.pop(context);
+                    widget.showReciterSelector(context, widget.isDark, ref);
+                  },
+                  borderRadius: BorderRadius.circular(
+                    ResponsiveUtils.adaptiveBorderRadius(context, base: 10.0),
+                  ),
+                  child: Container(
+                    padding: EdgeInsets.symmetric(
+                      horizontal: ResponsiveUtils.adaptivePadding(
+                        context,
+                        mobile: 12.0,
+                      ),
+                      vertical: ResponsiveUtils.adaptivePadding(
+                        context,
+                        mobile: 10.0,
+                      ),
+                    ),
+                    decoration: BoxDecoration(
+                      color: widget.isDark
+                          ? AppColors.darkCard
+                          : AppColors.ivory.withOpacity(0.3),
+                      borderRadius: BorderRadius.circular(
+                        ResponsiveUtils.adaptiveBorderRadius(
+                          context,
+                          base: 10.0,
+                        ),
+                      ),
+                      border: Border.all(
+                        color: widget.isDark
+                            ? AppColors.pureWhite.withOpacity(0.1)
+                            : AppColors.deepBlue.withOpacity(0.1),
+                        width: 1,
+                      ),
+                    ),
+                    child: Row(
+                      children: [
+                        Container(
+                          padding: EdgeInsets.all(
+                            ResponsiveUtils.adaptivePadding(
+                              context,
+                              mobile: 6.0,
+                            ),
+                          ),
+                          decoration: BoxDecoration(
+                            color: AppColors.luxuryGold.withOpacity(0.2),
+                            shape: BoxShape.circle,
+                          ),
+                          child: Icon(
+                            Icons.flag,
+                            color: AppColors.luxuryGold,
+                            size: ResponsiveUtils.adaptiveIconSize(
+                              context,
+                              base: 18.0,
+                            ),
+                          ),
+                        ),
+                        SizedBox(
+                          width: ResponsiveUtils.adaptivePadding(
+                            context,
+                            mobile: 10.0,
+                          ),
+                        ),
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(
+                                reciter['name'] ?? 'Mishary Alafasy',
+                                style: TextStyle(
+                                  color: widget.isDark
+                                      ? AppColors.pureWhite
+                                      : AppColors.textPrimary,
+                                  fontSize: ResponsiveUtils.adaptiveFontSize(
+                                    context,
+                                    mobile: 14,
+                                    tablet: 15,
+                                    desktop: 16,
+                                  ),
+                                  fontWeight: FontWeight.w600,
+                                ),
+                              ),
+                              if (reciter['arabicName'] != null &&
+                                  reciter['arabicName'].toString().isNotEmpty)
+                                Text(
+                                  reciter['arabicName'].toString(),
+                                  style: TextStyle(
+                                    fontFamily: 'Cairo',
+                                    color: widget.isDark
+                                        ? AppColors.pureWhite.withOpacity(0.7)
+                                        : AppColors.textSecondary,
+                                    fontSize: ResponsiveUtils.adaptiveFontSize(
+                                      context,
+                                      mobile: 12,
+                                      tablet: 13,
+                                      desktop: 14,
+                                    ),
+                                  ),
+                                  textDirection: TextDirection.rtl,
+                                ),
+                            ],
+                          ),
+                        ),
+                        Icon(
+                          Icons.arrow_forward_ios,
+                          size: 12,
+                          color: widget.isDark
+                              ? AppColors.pureWhite.withOpacity(0.5)
+                              : AppColors.textSecondary,
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              );
+            },
+          ),
+          SizedBox(
+            height: ResponsiveUtils.adaptivePadding(context, mobile: 20.0),
+          ),
+          // Playback controls section - Compact
+          Text(
+            'Playback controls',
+            style: TextStyle(
+              color: widget.isDark
+                  ? AppColors.pureWhite
+                  : AppColors.textPrimary,
+              fontSize: ResponsiveUtils.adaptiveFontSize(
+                context,
+                mobile: 16,
+                tablet: 17,
+                desktop: 18,
+              ),
+              fontWeight: FontWeight.w600,
+            ),
+          ),
+          SizedBox(
+            height: ResponsiveUtils.adaptivePadding(context, mobile: 10.0),
+          ),
+          Container(
+            padding: EdgeInsets.symmetric(
+              horizontal: ResponsiveUtils.adaptivePadding(
+                context,
+                mobile: 12.0,
+              ),
+              vertical: ResponsiveUtils.adaptivePadding(context, mobile: 10.0),
+            ),
+            decoration: BoxDecoration(
+              color: widget.isDark
+                  ? AppColors.darkCard
+                  : AppColors.ivory.withOpacity(0.3),
+              borderRadius: BorderRadius.circular(
+                ResponsiveUtils.adaptiveBorderRadius(context, base: 10.0),
+              ),
+            ),
+            child: Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                Text(
+                  'Auto-scroll',
+                  style: TextStyle(
+                    color: widget.isDark
+                        ? AppColors.pureWhite
+                        : AppColors.textPrimary,
+                    fontSize: ResponsiveUtils.adaptiveFontSize(
+                      context,
+                      mobile: 15,
+                      tablet: 16,
+                      desktop: 17,
+                    ),
+                  ),
+                ),
+                Switch(
+                  value: widget.isAutoScrollEnabled,
+                  onChanged: widget.onAutoScrollChanged,
+                  activeColor: AppColors.luxuryGold,
+                ),
+              ],
+            ),
+          ),
+          SizedBox(
+            height: ResponsiveUtils.adaptivePadding(context, mobile: 10.0),
+          ),
+          Consumer(
+            builder: (context, ref, child) {
+              final repetition = ref.watch(repetitionProvider);
+              final repetitionLabels = {
+                'never': 'Never',
+                'once': 'Once',
+                'twice': 'Twice',
+                'thrice': '3 times',
+                'infinite': 'Infinite',
+              };
+
+              return Material(
+                color: Colors.transparent,
+                child: InkWell(
+                  onTap: () {
+                    HapticFeedback.lightImpact();
+                    Navigator.pop(context);
+                    widget.showRepetitionSelector(context, widget.isDark, ref);
+                  },
+                  borderRadius: BorderRadius.circular(
+                    ResponsiveUtils.adaptiveBorderRadius(context, base: 10.0),
+                  ),
+                  child: Container(
+                    padding: EdgeInsets.symmetric(
+                      horizontal: ResponsiveUtils.adaptivePadding(
+                        context,
+                        mobile: 12.0,
+                      ),
+                      vertical: ResponsiveUtils.adaptivePadding(
+                        context,
+                        mobile: 10.0,
+                      ),
+                    ),
+                    decoration: BoxDecoration(
+                      color: widget.isDark
+                          ? AppColors.darkCard
+                          : AppColors.ivory.withOpacity(0.3),
+                      borderRadius: BorderRadius.circular(
+                        ResponsiveUtils.adaptiveBorderRadius(
+                          context,
+                          base: 10.0,
+                        ),
+                      ),
+                    ),
+                    child: Row(
+                      children: [
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(
+                                'Repetition',
+                                style: TextStyle(
+                                  color: widget.isDark
+                                      ? AppColors.pureWhite
+                                      : AppColors.textPrimary,
+                                  fontSize: ResponsiveUtils.adaptiveFontSize(
+                                    context,
+                                    mobile: 15,
+                                    tablet: 16,
+                                    desktop: 17,
+                                  ),
+                                ),
+                              ),
+                              Text(
+                                repetitionLabels[repetition] ?? 'Never',
+                                style: TextStyle(
+                                  color: widget.isDark
+                                      ? AppColors.pureWhite.withOpacity(0.7)
+                                      : AppColors.textSecondary,
+                                  fontSize: ResponsiveUtils.adaptiveFontSize(
+                                    context,
+                                    mobile: 13,
+                                    tablet: 14,
+                                    desktop: 15,
+                                  ),
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                        Icon(
+                          Icons.arrow_forward_ios,
+                          size: 12,
+                          color: widget.isDark
+                              ? AppColors.pureWhite.withOpacity(0.5)
+                              : AppColors.textSecondary,
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              );
+            },
+          ),
+          SizedBox(
+            height: ResponsiveUtils.adaptivePadding(context, mobile: 20.0),
+          ),
+          // Download audio section - Compact
+          Text(
+            'Offline Listening',
+            style: TextStyle(
+              color: widget.isDark
+                  ? AppColors.pureWhite
+                  : AppColors.textPrimary,
+              fontSize: ResponsiveUtils.adaptiveFontSize(
+                context,
+                mobile: 16,
+                tablet: 17,
+                desktop: 18,
+              ),
+              fontWeight: FontWeight.w600,
+            ),
+          ),
+          SizedBox(
+            height: ResponsiveUtils.adaptivePadding(context, mobile: 10.0),
+          ),
+          Material(
+            color: Colors.transparent,
+            child: InkWell(
+              onTap: () {
+                HapticFeedback.mediumImpact();
+                Navigator.pop(context);
+                widget.downloadSurahAudio(widget.isDark);
+              },
+              borderRadius: BorderRadius.circular(
+                ResponsiveUtils.adaptiveBorderRadius(context, base: 10.0),
+              ),
+              child: Container(
+                width: double.infinity,
+                padding: EdgeInsets.symmetric(
+                  horizontal: ResponsiveUtils.adaptivePadding(
+                    context,
+                    mobile: 12.0,
+                  ),
+                  vertical: ResponsiveUtils.adaptivePadding(
+                    context,
+                    mobile: 12.0,
+                  ),
+                ),
+                decoration: BoxDecoration(
+                  gradient: LinearGradient(
+                    colors: [
+                      AppColors.luxuryGold,
+                      AppColors.luxuryGold.withOpacity(0.8),
+                    ],
+                  ),
+                  borderRadius: BorderRadius.circular(
+                    ResponsiveUtils.adaptiveBorderRadius(context, base: 10.0),
+                  ),
+                  boxShadow: [
+                    BoxShadow(
+                      color: AppColors.luxuryGold.withOpacity(0.3),
+                      blurRadius: 6,
+                      spreadRadius: 0.5,
+                      offset: const Offset(0, 2),
+                    ),
+                  ],
+                ),
+                child: Row(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    Icon(
+                      Icons.download_rounded,
+                      color: AppColors.pureWhite,
+                      size: ResponsiveUtils.adaptiveIconSize(
+                        context,
+                        base: 20.0,
+                      ),
+                    ),
+                    SizedBox(
+                      width: ResponsiveUtils.adaptivePadding(
+                        context,
+                        mobile: 10.0,
+                      ),
+                    ),
+                    Text(
+                      'Download Audio',
+                      style: TextStyle(
+                        color: AppColors.pureWhite,
+                        fontSize: ResponsiveUtils.adaptiveFontSize(
+                          context,
+                          mobile: 15,
+                          tablet: 16,
+                          desktop: 17,
+                        ),
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ),
+          SizedBox(
+            height: ResponsiveUtils.adaptivePadding(context, mobile: 16.0),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// New three-column selector for Juz, Surah, and Ayah
+class _JuzSurahAyahSelectorBottomSheet extends ConsumerStatefulWidget {
+  final int currentSurahNumber;
+  final int? currentAyahNumber;
+  final bool isDark;
+  final Function(Surah surah, int? ayahNumber) onSurahSelected;
+
+  const _JuzSurahAyahSelectorBottomSheet({
+    required this.currentSurahNumber,
+    this.currentAyahNumber,
+    required this.isDark,
+    required this.onSurahSelected,
+  });
+
+  @override
+  ConsumerState<_JuzSurahAyahSelectorBottomSheet> createState() =>
+      _JuzSurahAyahSelectorBottomSheetState();
+}
+
+class _JuzSurahAyahSelectorBottomSheetState
+    extends ConsumerState<_JuzSurahAyahSelectorBottomSheet> {
+  int? _selectedJuz;
+  int? _selectedSurah;
+  int? _selectedAyah;
+  final ScrollController _juzScrollController = ScrollController();
+  final ScrollController _surahScrollController = ScrollController();
+  final ScrollController _ayahScrollController = ScrollController();
+
+  @override
+  void initState() {
+    super.initState();
+    // Initialize with current surah's Juz
+    final juzs = getJuzsForSurah(widget.currentSurahNumber);
+    if (juzs.isNotEmpty) {
+      _selectedJuz = juzs.first;
+      _selectedSurah = widget.currentSurahNumber;
+      _selectedAyah = widget.currentAyahNumber ?? 1;
+    }
+    // Scroll to selected items after build
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _scrollToSelectedItems();
+    });
+  }
+
+  void _scrollToSelectedItems() {
+    // Wait a bit for the panel to fully open and lists to render
+    Future.delayed(const Duration(milliseconds: 350), () {
+      if (!mounted) return;
+
+      // Scroll to selected Juz
+      if (_selectedJuz != null && _juzScrollController.hasClients) {
+        final juzIndex = _selectedJuz! - 1;
+        final itemHeight = ResponsiveUtils.responsive(
+          context,
+          mobile: 50.0,
+          tablet: 55.0,
+          desktop: 60.0,
+        );
+        final targetOffset = (juzIndex * itemHeight).clamp(
+          0.0,
+          _juzScrollController.position.maxScrollExtent,
+        );
+        _juzScrollController.animateTo(
+          targetOffset,
+          duration: const Duration(milliseconds: 400),
+          curve: Curves.easeOutCubic,
+        );
+      }
+
+      // Scroll to selected Surah
+      if (_selectedSurah != null && _surahScrollController.hasClients) {
+        Future.delayed(const Duration(milliseconds: 100), () {
+          if (!mounted || !_surahScrollController.hasClients) return;
+
+          final surahsAsync = ref.read(surahsProvider);
+          surahsAsync.whenData((surahs) {
+            if (!mounted) return;
+
+            final juzSurahs = _selectedJuz != null
+                ? getSurahsInJuz(_selectedJuz!)
+                      .map((surahNum) {
+                        try {
+                          return surahs.firstWhere((s) => s.number == surahNum);
+                        } catch (e) {
+                          return null;
+                        }
+                      })
+                      .where((s) => s != null)
+                      .cast<SurahModel>()
+                      .toList()
+                : <SurahModel>[];
+
+            final uniqueSurahs = juzSurahs.toSet().toList()
+              ..sort((a, b) => a.number.compareTo(b.number));
+
+            final surahIndex = uniqueSurahs.indexWhere(
+              (s) => s.number == _selectedSurah,
+            );
+
+            if (surahIndex >= 0 && _surahScrollController.hasClients) {
+              final itemHeight = ResponsiveUtils.responsive(
+                context,
+                mobile: 48.0,
+                tablet: 52.0,
+                desktop: 56.0,
+              );
+              final targetOffset = (surahIndex * itemHeight).clamp(
+                0.0,
+                _surahScrollController.position.maxScrollExtent,
+              );
+              _surahScrollController.animateTo(
+                targetOffset,
+                duration: const Duration(milliseconds: 400),
+                curve: Curves.easeOutCubic,
+              );
+            }
+          });
+        });
+      }
+
+      // Scroll to selected Ayah
+      if (_selectedAyah != null &&
+          _selectedSurah != null &&
+          _ayahScrollController.hasClients) {
+        Future.delayed(const Duration(milliseconds: 200), () {
+          if (!mounted || !_ayahScrollController.hasClients) return;
+
+          final surahsAsync = ref.read(surahsProvider);
+          surahsAsync.whenData((surahs) {
+            if (!mounted) return;
+
+            try {
+              final surah = surahs.firstWhere(
+                (s) => s.number == _selectedSurah,
+              );
+              final ayahIndex = (_selectedAyah! - 1).clamp(
+                0,
+                surah.numberOfAyahs - 1,
+              );
+              final itemHeight = ResponsiveUtils.responsive(
+                context,
+                mobile: 48.0,
+                tablet: 52.0,
+                desktop: 56.0,
+              );
+              final targetOffset = (ayahIndex * itemHeight).clamp(
+                0.0,
+                _ayahScrollController.position.maxScrollExtent,
+              );
+              _ayahScrollController.animateTo(
+                targetOffset,
+                duration: const Duration(milliseconds: 400),
+                curve: Curves.easeOutCubic,
+              );
+            } catch (e) {
+              debugPrint('Error scrolling to ayah: $e');
+            }
+          });
+        });
+      }
+    });
+  }
+
+  @override
+  void dispose() {
+    _juzScrollController.dispose();
+    _surahScrollController.dispose();
+    _ayahScrollController.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final surahsAsync = ref.watch(surahsProvider);
+    final screenHeight = MediaQuery.of(context).size.height;
+    final maxHeight = ResponsiveUtils.responsive(
+      context,
+      mobile: screenHeight * 0.65,
+      tablet: screenHeight * 0.6,
+      desktop: screenHeight * 0.55,
+    );
+
+    return Container(
+      constraints: BoxConstraints(maxHeight: maxHeight),
+      decoration: BoxDecoration(
+        color: widget.isDark ? AppColors.darkSurface : AppColors.pureWhite,
+        borderRadius: BorderRadius.only(
+          topLeft: Radius.circular(
+            ResponsiveUtils.adaptiveBorderRadius(context, base: 20.0),
+          ),
+          topRight: Radius.circular(
+            ResponsiveUtils.adaptiveBorderRadius(context, base: 20.0),
+          ),
+        ),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withOpacity(0.2),
+            blurRadius: 20,
+            spreadRadius: 5,
+            offset: const Offset(0, -5),
+          ),
+        ],
+      ),
+      child: SafeArea(
+        top: false,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            // Handle bar with close button
+            Padding(
+              padding: EdgeInsets.only(
+                top: ResponsiveUtils.adaptivePadding(context, mobile: 8.0),
+                bottom: ResponsiveUtils.adaptivePadding(context, mobile: 4.0),
+                left: ResponsiveUtils.adaptivePadding(context, mobile: 12.0),
+                right: ResponsiveUtils.adaptivePadding(context, mobile: 12.0),
+              ),
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  // Handle bar
+                  Container(
+                    width: ResponsiveUtils.responsive(
+                      context,
+                      mobile: 36.0,
+                      tablet: 40.0,
+                      desktop: 44.0,
+                    ),
+                    height: 3,
+                    decoration: BoxDecoration(
+                      color: widget.isDark
+                          ? AppColors.pureWhite.withOpacity(0.2)
+                          : AppColors.textSecondary.withOpacity(0.3),
+                      borderRadius: BorderRadius.circular(2),
+                    ),
+                  ),
+                  // Close button
+                  Material(
+                    color: Colors.transparent,
+                    child: InkWell(
+                      onTap: () {
+                        HapticFeedback.lightImpact();
+                        Navigator.pop(context);
+                      },
+                      borderRadius: BorderRadius.circular(16),
+                      child: Container(
+                        padding: EdgeInsets.all(
+                          ResponsiveUtils.adaptivePadding(context, mobile: 6.0),
+                        ),
+                        decoration: BoxDecoration(
+                          color: widget.isDark
+                              ? AppColors.pureWhite.withOpacity(0.1)
+                              : AppColors.deepBlue.withOpacity(0.1),
+                          shape: BoxShape.circle,
+                        ),
+                        child: Icon(
+                          Icons.close_rounded,
+                          color: widget.isDark
+                              ? AppColors.pureWhite
+                              : AppColors.textPrimary,
+                          size: ResponsiveUtils.adaptiveIconSize(
+                            context,
+                            base: 18.0,
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+
+            // Three columns header - Compact
+            Container(
+              padding: EdgeInsets.symmetric(
+                horizontal: ResponsiveUtils.adaptivePadding(
+                  context,
+                  mobile: 12.0,
+                ),
+                vertical: ResponsiveUtils.adaptivePadding(context, mobile: 8.0),
+              ),
+              decoration: BoxDecoration(
+                color: widget.isDark
+                    ? AppColors.darkCard
+                    : AppColors.ivory.withOpacity(0.3),
+                border: Border(
+                  bottom: BorderSide(
+                    color: widget.isDark
+                        ? AppColors.pureWhite.withOpacity(0.1)
+                        : AppColors.deepBlue.withOpacity(0.1),
+                    width: 1,
+                  ),
+                ),
+              ),
+              child: Row(
+                children: [
+                  Expanded(
+                    flex: 2,
+                    child: Text(
+                      'Juz',
+                      style: TextStyle(
+                        color: AppColors.luxuryGold,
+                        fontSize: ResponsiveUtils.adaptiveFontSize(
+                          context,
+                          mobile: 12,
+                          tablet: 13,
+                          desktop: 14,
+                        ),
+                        fontWeight: FontWeight.w600,
+                      ),
+                      textAlign: TextAlign.center,
+                    ),
+                  ),
+                  Container(
+                    width: 1,
+                    height: 16,
+                    color: widget.isDark
+                        ? AppColors.pureWhite.withOpacity(0.1)
+                        : AppColors.deepBlue.withOpacity(0.1),
+                  ),
+                  Expanded(
+                    flex: 3,
+                    child: Text(
+                      'Surah',
+                      style: TextStyle(
+                        color: AppColors.luxuryGold,
+                        fontSize: ResponsiveUtils.adaptiveFontSize(
+                          context,
+                          mobile: 12,
+                          tablet: 13,
+                          desktop: 14,
+                        ),
+                        fontWeight: FontWeight.w600,
+                      ),
+                      textAlign: TextAlign.center,
+                    ),
+                  ),
+                  Container(
+                    width: 1,
+                    height: 16,
+                    color: widget.isDark
+                        ? AppColors.pureWhite.withOpacity(0.1)
+                        : AppColors.deepBlue.withOpacity(0.1),
+                  ),
+                  Expanded(
+                    flex: 2,
+                    child: Text(
+                      'Ayah',
+                      style: TextStyle(
+                        color: AppColors.luxuryGold,
+                        fontSize: ResponsiveUtils.adaptiveFontSize(
+                          context,
+                          mobile: 12,
+                          tablet: 13,
+                          desktop: 14,
+                        ),
+                        fontWeight: FontWeight.w600,
+                      ),
+                      textAlign: TextAlign.center,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+
+            // Three scrollable columns
+            Expanded(
+              child: surahsAsync.when(
+                data: (surahs) => _buildThreeColumns(surahs),
+                loading: () => Center(
+                  child: CircularProgressIndicator(
+                    color: widget.isDark
+                        ? AppColors.luxuryGold
+                        : AppColors.deepBlue,
+                  ),
+                ),
+                error: (error, stack) => Center(
+                  child: Column(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      Icon(
+                        Icons.error_outline,
+                        size: 64,
+                        color: AppColors.error,
+                      ),
+                      SizedBox(
+                        height: ResponsiveUtils.adaptivePadding(
+                          context,
+                          mobile: 16.0,
+                        ),
+                      ),
+                      Text(
+                        'Erreur de chargement',
+                        style: TextStyle(
+                          color: AppColors.error,
+                          fontSize: ResponsiveUtils.adaptiveFontSize(
+                            context,
+                            mobile: 16,
+                            tablet: 17,
+                            desktop: 18,
+                          ),
+                        ),
+                      ),
+                      SizedBox(
+                        height: ResponsiveUtils.adaptivePadding(
+                          context,
+                          mobile: 12.0,
+                        ),
+                      ),
+                      TextButton(
+                        onPressed: () {
+                          ref.invalidate(surahsProvider);
+                        },
+                        child: const Text('Réessayer'),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+
+            // Apply button - Compact
+            if (_selectedSurah != null)
+              Container(
+                padding: EdgeInsets.symmetric(
+                  horizontal: ResponsiveUtils.adaptivePadding(
+                    context,
+                    mobile: 12.0,
+                  ),
+                  vertical: ResponsiveUtils.adaptivePadding(
+                    context,
+                    mobile: 10.0,
+                  ),
+                ),
+                decoration: BoxDecoration(
+                  color: widget.isDark
+                      ? AppColors.darkCard
+                      : AppColors.ivory.withOpacity(0.3),
+                  border: Border(
+                    top: BorderSide(
+                      color: widget.isDark
+                          ? AppColors.pureWhite.withOpacity(0.1)
+                          : AppColors.deepBlue.withOpacity(0.1),
+                      width: 1,
+                    ),
+                  ),
+                ),
+                child: SafeArea(
+                  top: false,
+                  child: SizedBox(
+                    width: double.infinity,
+                    child: ElevatedButton(
+                      onPressed: () {
+                        if (_selectedSurah != null) {
+                          final surahModel = surahsAsync.value?.firstWhere(
+                            (s) => s.number == _selectedSurah,
+                          );
+                          if (surahModel != null) {
+                            final surah = SurahAdapter.fromApiModel(surahModel);
+                            HapticFeedback.mediumImpact();
+                            widget.onSurahSelected(surah, _selectedAyah);
+                          }
+                        }
+                      },
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: AppColors.luxuryGold,
+                        foregroundColor: AppColors.pureWhite,
+                        padding: EdgeInsets.symmetric(
+                          vertical: ResponsiveUtils.adaptivePadding(
+                            context,
+                            mobile: 12.0,
+                          ),
+                        ),
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(
+                            ResponsiveUtils.adaptiveBorderRadius(
+                              context,
+                              base: 10.0,
+                            ),
+                          ),
+                        ),
+                      ),
+                      child: Text(
+                        'Go to Surah',
+                        style: TextStyle(
+                          fontSize: ResponsiveUtils.adaptiveFontSize(
+                            context,
+                            mobile: 14,
+                            tablet: 15,
+                            desktop: 16,
+                          ),
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildThreeColumns(List<SurahModel> surahs) {
+    // Show ALL surahs (not filtered by Juz)
+    final allSurahs = surahs.toList()
+      ..sort((a, b) => a.number.compareTo(b.number));
+
+    // Get selected surah model
+    final selectedSurahModel = _selectedSurah != null
+        ? (surahs.firstWhere(
+            (s) => s.number == _selectedSurah,
+            orElse: () => surahs.first,
+          ))
+        : null;
+
+    return Row(
+      children: [
+        // Juz column
+        Expanded(flex: 2, child: _buildJuzColumn()),
+        Container(
+          width: 1,
+          color: widget.isDark
+              ? AppColors.pureWhite.withOpacity(0.1)
+              : AppColors.deepBlue.withOpacity(0.1),
+        ),
+        // Surah column - Show ALL surahs
+        Expanded(flex: 3, child: _buildSurahColumn(allSurahs)),
+        Container(
+          width: 1,
+          color: widget.isDark
+              ? AppColors.pureWhite.withOpacity(0.1)
+              : AppColors.deepBlue.withOpacity(0.1),
+        ),
+        // Ayah column
+        Expanded(flex: 2, child: _buildAyahColumn(selectedSurahModel)),
+      ],
+    );
+  }
+
+  Widget _buildJuzColumn() {
+    final allJuzs = getAllJuzs();
+
+    return ListView.builder(
+      controller: _juzScrollController,
+      padding: EdgeInsets.zero,
+      itemCount: allJuzs.length,
+      itemBuilder: (context, index) {
+        final juz = allJuzs[index];
+        final isSelected = _selectedJuz == juz;
+
+        return Material(
+          color: Colors.transparent,
+          child: InkWell(
+            onTap: () {
+              HapticFeedback.selectionClick();
+              setState(() {
+                _selectedJuz = juz;
+                // Don't auto-select surah when Juz changes - let user choose
+                // Just scroll to current surah if it exists
+              });
+            },
+            child: Container(
+              padding: EdgeInsets.symmetric(
+                vertical: ResponsiveUtils.adaptivePadding(
+                  context,
+                  mobile: 10.0,
+                ),
+                horizontal: ResponsiveUtils.adaptivePadding(
+                  context,
+                  mobile: 6.0,
+                ),
+              ),
+              decoration: BoxDecoration(
+                color: isSelected
+                    ? (widget.isDark
+                          ? AppColors.luxuryGold.withOpacity(0.2)
+                          : AppColors.luxuryGold.withOpacity(0.1))
+                    : Colors.transparent,
+              ),
+              child: Text(
+                '$juz',
+                style: TextStyle(
+                  color: isSelected
+                      ? AppColors.luxuryGold
+                      : (widget.isDark
+                            ? AppColors.pureWhite
+                            : AppColors.textPrimary),
+                  fontSize: ResponsiveUtils.adaptiveFontSize(
+                    context,
+                    mobile: 13,
+                    tablet: 14,
+                    desktop: 15,
+                  ),
+                  fontWeight: isSelected ? FontWeight.w600 : FontWeight.normal,
+                ),
+                textAlign: TextAlign.center,
+              ),
+            ),
+          ),
+        );
+      },
+    );
+  }
+
+  Widget _buildSurahColumn(List<SurahModel> allSurahs) {
+    if (allSurahs.isEmpty) {
+      return Center(
+        child: Text(
+          'Loading...',
+          style: TextStyle(
+            color: widget.isDark
+                ? AppColors.pureWhite.withOpacity(0.5)
+                : AppColors.textSecondary,
+            fontSize: ResponsiveUtils.adaptiveFontSize(
+              context,
+              mobile: 12,
+              tablet: 13,
+              desktop: 14,
+            ),
+          ),
+        ),
+      );
+    }
+
+    // All surahs are already sorted
+    final uniqueSurahs = allSurahs;
+
+    return ListView.builder(
+      controller: _surahScrollController,
+      padding: EdgeInsets.zero,
+      itemCount: uniqueSurahs.length,
+      itemBuilder: (context, index) {
+        final surah = uniqueSurahs[index];
+        final surahModel = SurahAdapter.fromApiModel(surah);
+        final isSelected = _selectedSurah == surah.number;
+
+        return Material(
+          color: Colors.transparent,
+          child: InkWell(
+            onTap: () {
+              HapticFeedback.selectionClick();
+              setState(() {
+                _selectedSurah = surah.number;
+                _selectedAyah = 1; // Reset to first ayah
+              });
+              // Scroll ayah column to top
+              if (_ayahScrollController.hasClients) {
+                _ayahScrollController.animateTo(
+                  0,
+                  duration: const Duration(milliseconds: 200),
+                  curve: Curves.easeOut,
+                );
+              }
+            },
+            child: Container(
+              padding: EdgeInsets.symmetric(
+                vertical: ResponsiveUtils.adaptivePadding(
+                  context,
+                  mobile: 12.0,
+                ),
+                horizontal: ResponsiveUtils.adaptivePadding(
+                  context,
+                  mobile: 8.0,
+                ),
+              ),
+              decoration: BoxDecoration(
+                color: isSelected
+                    ? (widget.isDark
+                          ? AppColors.luxuryGold.withOpacity(0.2)
+                          : AppColors.luxuryGold.withOpacity(0.1))
+                    : Colors.transparent,
+              ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text(
+                    '${surah.number}. ${surahModel.name}',
+                    style: TextStyle(
+                      color: isSelected
+                          ? AppColors.luxuryGold
+                          : (widget.isDark
+                                ? AppColors.pureWhite
+                                : AppColors.textPrimary),
+                      fontSize: ResponsiveUtils.adaptiveFontSize(
+                        context,
+                        mobile: 14,
+                        tablet: 15,
+                        desktop: 16,
+                      ),
+                      fontWeight: isSelected
+                          ? FontWeight.w600
+                          : FontWeight.normal,
+                    ),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                ],
+              ),
+            ),
+          ),
+        );
+      },
+    );
+  }
+
+  Widget _buildAyahColumn(SurahModel? surah) {
+    if (_selectedSurah == null || surah == null) {
+      return Center(
+        child: Text(
+          'Select Surah',
+          style: TextStyle(
+            color: widget.isDark
+                ? AppColors.pureWhite.withOpacity(0.5)
+                : AppColors.textSecondary,
+            fontSize: ResponsiveUtils.adaptiveFontSize(
+              context,
+              mobile: 14,
+              tablet: 15,
+              desktop: 16,
+            ),
+          ),
+        ),
+      );
+    }
+
+    final ayahCount = surah.numberOfAyahs;
+    final ayahs = List.generate(ayahCount, (index) => index + 1);
+
+    return ListView.builder(
+      controller: _ayahScrollController,
+      padding: EdgeInsets.zero,
+      itemCount: ayahs.length,
+      itemBuilder: (context, index) {
+        final ayah = ayahs[index];
+        final isSelected = _selectedAyah == ayah;
+
+        return Material(
+          color: Colors.transparent,
+          child: InkWell(
+            onTap: () {
+              HapticFeedback.selectionClick();
+              setState(() {
+                _selectedAyah = ayah;
+              });
+            },
+            child: Container(
+              padding: EdgeInsets.symmetric(
+                vertical: ResponsiveUtils.adaptivePadding(
+                  context,
+                  mobile: 10.0,
+                ),
+                horizontal: ResponsiveUtils.adaptivePadding(
+                  context,
+                  mobile: 6.0,
+                ),
+              ),
+              decoration: BoxDecoration(
+                color: isSelected
+                    ? (widget.isDark
+                          ? AppColors.luxuryGold.withOpacity(0.2)
+                          : AppColors.luxuryGold.withOpacity(0.1))
+                    : Colors.transparent,
+              ),
+              child: Text(
+                '$ayah',
+                style: TextStyle(
+                  color: isSelected
+                      ? AppColors.luxuryGold
+                      : (widget.isDark
+                            ? AppColors.pureWhite
+                            : AppColors.textPrimary),
+                  fontSize: ResponsiveUtils.adaptiveFontSize(
+                    context,
+                    mobile: 13,
+                    tablet: 14,
+                    desktop: 15,
+                  ),
+                  fontWeight: isSelected ? FontWeight.w600 : FontWeight.normal,
+                ),
+                textAlign: TextAlign.center,
+              ),
+            ),
+          ),
+        );
+      },
+    );
+  }
+}
+
 class _SurahSelectorBottomSheet extends ConsumerStatefulWidget {
   final int currentSurahNumber;
   final bool isDark;
