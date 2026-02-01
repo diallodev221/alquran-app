@@ -135,6 +135,8 @@ class _PrayerTimesScreenState extends ConsumerState<PrayerTimesScreen> {
                                                 .withOpacity(0.8),
                                             fontWeight: FontWeight.w300,
                                           ),
+                                          maxLines: 1,
+                                          overflow: TextOverflow.ellipsis,
                                         ),
                                         loading: () => Text(
                                           'Chargement...',
@@ -149,6 +151,8 @@ class _PrayerTimesScreenState extends ConsumerState<PrayerTimesScreen> {
                                             color: AppColors.pureWhite
                                                 .withOpacity(0.8),
                                           ),
+                                          maxLines: 1,
+                                          overflow: TextOverflow.ellipsis,
                                         ),
                                         error: (_, __) => Text(
                                           'Erreur de localisation',
@@ -163,6 +167,8 @@ class _PrayerTimesScreenState extends ConsumerState<PrayerTimesScreen> {
                                             color: AppColors.pureWhite
                                                 .withOpacity(0.8),
                                           ),
+                                          maxLines: 1,
+                                          overflow: TextOverflow.ellipsis,
                                         ),
                                       ),
                                     ],
@@ -1309,7 +1315,7 @@ class _PrayerTimesScreenState extends ConsumerState<PrayerTimesScreen> {
                     },
                   ),
                 )
-                .toList(),
+                ,
             const SizedBox(height: AppTheme.paddingMedium),
           ],
         ),

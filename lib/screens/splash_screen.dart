@@ -59,6 +59,14 @@ class _SplashScreenState extends ConsumerState<SplashScreen>
       final settingsService = SettingsService();
       await settingsService.init();
 
+      // Restaurer la dernière lecture (clé du produit : continuité)
+      final lastSurah = await settingsService.getLastReadSurah();
+      final lastAyah = await settingsService.getLastReadAyah();
+      if (mounted) {
+        ref.read(lastReadSurahProvider.notifier).state = lastSurah;
+        ref.read(lastReadAyahProvider.notifier).state = lastAyah;
+      }
+
       final preloadService = PreloadService(
         quranApiService: quranApiService,
         audioService: audioService,

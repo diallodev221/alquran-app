@@ -24,6 +24,8 @@ class SettingsService {
   static const String _iftarReminderKey = 'iftar_reminder';
   static const String _silentModeDuringPrayerKey = 'silent_mode_during_prayer';
   static const String _adaptiveNotificationsKey = 'adaptive_notifications';
+  static const String _lastReadSurahKey = 'last_read_surah';
+  static const String _lastReadAyahKey = 'last_read_ayah';
 
   Box<dynamic>? _box;
 
@@ -195,16 +197,16 @@ class SettingsService {
     await box.put(_repetitionKey, value);
   }
 
-  // ==================== HIGHLIGHT AYAH ====================
+  // ==================== MARQUES DE WAQF (TANZIL) ====================
 
-  /// Obtenir l'état du highlight des ayahs
-  Future<bool> getHighlightAyah() async {
+  /// Afficher les marques de waqf (pause marks) à la manière Tanzil (petit, distinct).
+  /// Remplace l’ancien « highlight ayah » : guide la récitation par les signes م، لا، ج، etc.
+  Future<bool> getPauseMarksTanzil() async {
     final box = await _getBox();
-    return box.get(_highlightAyahKey, defaultValue: false) as bool;
+    return box.get(_highlightAyahKey, defaultValue: true) as bool;
   }
 
-  /// Définir l'état du highlight des ayahs
-  Future<void> setHighlightAyah(bool value) async {
+  Future<void> setPauseMarksTanzil(bool value) async {
     final box = await _getBox();
     await box.put(_highlightAyahKey, value);
   }
@@ -385,6 +387,33 @@ class SettingsService {
   Future<void> setAdaptiveNotificationsEnabled(bool enabled) async {
     final box = await _getBox();
     await box.put(_adaptiveNotificationsKey, enabled);
+  }
+
+  // ==================== DERNIÈRE LECTURE (CLÉ DU PRODUIT) ====================
+
+  /// Obtenir la dernière sourate lue (numéro, 1–114)
+  Future<int> getLastReadSurah() async {
+    final box = await _getBox();
+    final v = box.get(_lastReadSurahKey);
+    if (v == null) return 1;
+    final n = v is int ? v : int.tryParse(v.toString());
+    return (n != null && n >= 1 && n <= 114) ? n : 1;
+  }
+
+  /// Obtenir le dernier verset lu (numéro d'ayah dans la sourate)
+  Future<int> getLastReadAyah() async {
+    final box = await _getBox();
+    final v = box.get(_lastReadAyahKey);
+    if (v == null) return 1;
+    final n = v is int ? v : int.tryParse(v.toString());
+    return (n != null && n >= 1) ? n : 1;
+  }
+
+  /// Sauvegarder la dernière lecture (sourate + verset). Appelé à chaque progression dans le lecteur.
+  Future<void> setLastRead({required int surahNumber, required int ayahNumber}) async {
+    final box = await _getBox();
+    await box.put(_lastReadSurahKey, surahNumber.clamp(1, 114));
+    await box.put(_lastReadAyahKey, ayahNumber.clamp(1, 1000));
   }
 
   // ==================== GESTION GLOBALE ====================

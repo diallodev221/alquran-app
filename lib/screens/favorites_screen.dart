@@ -110,7 +110,12 @@ class _FavoritesScreenState extends ConsumerState<FavoritesScreen>
                 ),
                 child: SafeArea(
                   child: Padding(
-                    padding: const EdgeInsets.all(AppTheme.paddingLarge),
+                    padding: EdgeInsets.all(
+                      ResponsiveUtils.adaptivePadding(
+                        context,
+                        mobile: AppTheme.paddingLarge,
+                      ),
+                    ),
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       mainAxisAlignment: MainAxisAlignment.center,
@@ -464,10 +469,10 @@ class _FavoritesScreenState extends ConsumerState<FavoritesScreen>
             }
 
             // Trouver la sourate correspondante
-            final surah = allSurahs.firstWhere(
-              (s) => s.number == surahNumber,
-              orElse: () => allSurahs.first,
-            );
+            final matches =
+                allSurahs.where((s) => s.number == surahNumber).toList();
+            if (matches.isEmpty) return const SizedBox.shrink();
+            final surah = matches.first;
 
             return FadeTransition(
               opacity: _fadeAnimation,

@@ -317,7 +317,9 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
                   const SizedBox(height: AppTheme.paddingLarge),
 
                   // Section "Reprendre la lecture" si applicable (exclure Baqara)
-                  if (lastReadSurahNumber > 0 && lastReadSurahNumber != 2)
+                  if (lastReadSurahNumber > 0 &&
+                      lastReadSurahNumber != 2 &&
+                      surahs.isNotEmpty)
                     _buildResumeReading(surahs, lastReadSurahNumber, isDark),
 
                   const SizedBox(height: AppTheme.paddingLarge),
@@ -326,10 +328,15 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
                   Row(
                     mainAxisAlignment: MainAxisAlignment.spaceBetween,
                     children: [
-                      Text(
-                        'Toutes les Sourates',
-                        style: Theme.of(context).textTheme.displaySmall,
+                      Expanded(
+                        child: Text(
+                          'Toutes les Sourates',
+                          style: Theme.of(context).textTheme.displaySmall,
+                          overflow: TextOverflow.ellipsis,
+                          maxLines: 1,
+                        ),
                       ),
+                      const SizedBox(width: AppTheme.paddingSmall),
                       Container(
                         padding: const EdgeInsets.symmetric(
                           horizontal: 12,
@@ -544,10 +551,11 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
     int lastReadSurahNumber,
     bool isDark,
   ) {
-    final lastReadSurah = surahs.firstWhere(
-      (s) => s.number == lastReadSurahNumber,
-      orElse: () => surahs.first,
-    );
+    if (surahs.isEmpty) return const SizedBox.shrink();
+    final matches =
+        surahs.where((s) => s.number == lastReadSurahNumber).toList();
+    if (matches.isEmpty) return const SizedBox.shrink();
+    final lastReadSurah = matches.first;
     final lastReadAyah = ref.watch(lastReadAyahProvider);
 
     final responsivePadding = ResponsiveUtils.adaptivePadding(

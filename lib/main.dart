@@ -6,6 +6,7 @@ import 'package:hive_flutter/hive_flutter.dart';
 import 'theme/app_theme.dart';
 import 'screens/splash_screen.dart';
 import 'services/cache_service.dart';
+import 'data/local/quran_database.dart';
 import 'services/favorites_service.dart';
 import 'services/settings_service.dart';
 import 'services/user_behavior_service.dart';
@@ -17,9 +18,12 @@ import 'providers/settings_providers.dart';
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
 
-  // Initialiser Hive pour le cache local et les favoris
   await Hive.initFlutter();
   await CacheService.init();
+
+  // Texte Qur'an 100 % offline (Tanzil) : copie assets puis init SQLite
+  await QuranDatabase.copyFromAssetsIfNeeded(rootBundle.load);
+  await QuranDatabase.initialize();
 
   // Initialiser le service de favoris
   final favoritesService = FavoritesService();

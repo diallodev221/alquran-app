@@ -6,6 +6,7 @@ import '../theme/app_colors.dart';
 import '../theme/app_theme.dart';
 import '../providers/audio_providers.dart';
 import '../providers/settings_providers.dart';
+import '../services/audio_service.dart';
 import '../providers/prayer_times_providers.dart';
 import '../utils/responsive_utils.dart';
 import '../utils/available_translations.dart';
@@ -373,17 +374,21 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
             color: AppColors.luxuryGold,
           ),
           SizedBox(width: ResponsiveUtils.adaptivePadding(context, mobile: 8)),
-          Text(
-            title,
-            style: TextStyle(
-              fontSize: ResponsiveUtils.adaptiveFontSize(
-                context,
-                mobile: 16,
-                tablet: 17,
-                desktop: 18,
+          Expanded(
+            child: Text(
+              title,
+              style: TextStyle(
+                fontSize: ResponsiveUtils.adaptiveFontSize(
+                  context,
+                  mobile: 16,
+                  tablet: 17,
+                  desktop: 18,
+                ),
+                fontWeight: FontWeight.bold,
+                color: isDark ? AppColors.luxuryGold : AppColors.deepBlue,
               ),
-              fontWeight: FontWeight.bold,
-              color: isDark ? AppColors.luxuryGold : AppColors.deepBlue,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
             ),
           ),
         ],
@@ -585,7 +590,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
       trailing: Switch(
         value: value,
         onChanged: onChanged,
-        activeColor: AppColors.luxuryGold,
+        activeThumbColor: AppColors.luxuryGold,
       ),
     );
   }
@@ -637,6 +642,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
               Expanded(
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
+                  mainAxisSize: MainAxisSize.min,
                   children: [
                     Text(
                       title,
@@ -652,6 +658,8 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                             ? AppColors.darkTextPrimary
                             : AppColors.textPrimary,
                       ),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
                     ),
                     Text(
                       subtitle,
@@ -666,6 +674,8 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                             ? AppColors.darkTextSecondary
                             : AppColors.textSecondary,
                       ),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
                     ),
                   ],
                 ),
@@ -721,6 +731,8 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
           fontWeight: FontWeight.w600,
           color: isDark ? AppColors.darkTextPrimary : AppColors.textPrimary,
         ),
+        maxLines: 1,
+        overflow: TextOverflow.ellipsis,
       ),
       subtitle: Text(
         subtitle,
@@ -733,6 +745,8 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
           ),
           color: isDark ? AppColors.darkTextSecondary : AppColors.textSecondary,
         ),
+        maxLines: 1,
+        overflow: TextOverflow.ellipsis,
       ),
       trailing: showArrow
           ? Icon(Icons.chevron_right, color: AppColors.luxuryGold)
@@ -780,6 +794,8 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
               ? AppColors.error
               : (isDark ? AppColors.darkTextPrimary : AppColors.textPrimary),
         ),
+        maxLines: 1,
+        overflow: TextOverflow.ellipsis,
       ),
       subtitle: Text(
         subtitle,
@@ -792,6 +808,8 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
           ),
           color: isDark ? AppColors.darkTextSecondary : AppColors.textSecondary,
         ),
+        maxLines: 1,
+        overflow: TextOverflow.ellipsis,
       ),
       onTap: onTap,
     );
@@ -811,21 +829,11 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
 
   Widget _buildReciterTile(bool isDark) {
     final selectedReciter = ref.watch(selectedReciterPersistentProvider);
-
-    // Liste des récitateurs populaires
-    final popularReciters = {
-      'ar.alafasy': 'Mishary Rashid Alafasy',
-      'ar.abdulbasitmurattal': 'Abdul Basit',
-      'ar.husary': 'Mahmoud Al-Hussary',
-      'ar.hani': 'Hani Ar-Rifai',
-      'ar.minshawi': 'Mohamed Al-Minshawi',
-      'ar.shaatree': 'Abu Bakr Al-Shatri',
-      'ar.abdulsamad': 'Abdul Basit (Mujawwad)',
-      'ar.mahermuaiqly': 'Maher Al-Muaiqly',
-      'ar.sudais': 'Abdurrahman As-Sudais',
-    };
-
-    final reciterName = popularReciters[selectedReciter] ?? 'Mishary Alafasy';
+    final list = AudioService.popularReciters
+        .where((r) => r['id'] == selectedReciter)
+        .toList();
+    final reciterName =
+        list.isNotEmpty ? (list.first['name'] ?? 'Mishary Rashid Alafasy') : 'Mishary Rashid Alafasy';
 
     return _buildNavigationTile(
       title: 'Récitateur',
@@ -983,7 +991,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                   }
                 },
               );
-            }).toList(),
+            }),
             const SizedBox(height: AppTheme.paddingMedium),
           ],
         ),
@@ -992,51 +1000,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
   }
 
   void _showReciterDialog(BuildContext context, bool isDark) {
-    // Liste des récitateurs populaires
-    final popularReciters = [
-      {
-        'id': 'ar.alafasy',
-        'name': 'Mishary Rashid Alafasy',
-        'arabicName': 'مشاري بن راشد العفاسي',
-      },
-      {
-        'id': 'ar.abdulbasitmurattal',
-        'name': 'Abdul Basit (Murattal)',
-        'arabicName': 'عبد الباسط عبد الصمد',
-      },
-      {
-        'id': 'ar.husary',
-        'name': 'Mahmoud Khalil Al-Hussary',
-        'arabicName': 'محمود خليل الحصري',
-      },
-      {'id': 'ar.hani', 'name': 'Hani Ar-Rifai', 'arabicName': 'هاني الرفاعي'},
-      {
-        'id': 'ar.minshawi',
-        'name': 'Mohamed Siddiq Al-Minshawi',
-        'arabicName': 'محمد صديق المنشاوي',
-      },
-      {
-        'id': 'ar.shaatree',
-        'name': 'Abu Bakr Al-Shatri',
-        'arabicName': 'أبو بكر الشاطري',
-      },
-      {
-        'id': 'ar.abdulsamad',
-        'name': 'Abdul Basit (Mujawwad)',
-        'arabicName': 'عبد الباسط عبد الصمد (مجود)',
-      },
-      {
-        'id': 'ar.mahermuaiqly',
-        'name': 'Maher Al-Muaiqly',
-        'arabicName': 'ماهر المعيقلي',
-      },
-      {
-        'id': 'ar.sudais',
-        'name': 'Abdurrahman As-Sudais',
-        'arabicName': 'عبد الرحمن السديس',
-      },
-    ];
-
+    final popularReciters = AudioService.popularReciters;
     final selectedReciter = ref.read(selectedReciterPersistentProvider);
 
     showModalBottomSheet(
@@ -1463,7 +1427,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                   },
                 ),
                 Text(
-                  '${minutes} minutes avant imsak',
+                  '$minutes minutes avant imsak',
                   style: TextStyle(
                     fontSize: ResponsiveUtils.adaptiveFontSize(
                       context,
@@ -1687,7 +1651,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                   }
                 },
               );
-            }).toList(),
+            }),
             const SizedBox(height: AppTheme.paddingMedium),
           ],
         ),

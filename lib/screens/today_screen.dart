@@ -21,6 +21,18 @@ import '../providers/quran_providers.dart';
 import '../utils/surah_adapter.dart';
 import '../widgets/responsive_wrapper.dart';
 
+/// Phase Ramadan pour l'accueil dynamique "Que dois-je faire maintenant ?"
+enum RamadanPhase {
+  /// Avant Fajr : intention & préparation (Suhoor / Imsak)
+  suhoor,
+  /// Journée de jeûne : Fajr → avant la fenêtre Iftar
+  fastingDay,
+  /// Avant Iftar : moment clé des invocations (≈ 45 min avant Maghrib)
+  beforeIftar,
+  /// Nuit : après Isha / Tarawih – Coran & introspection
+  night,
+}
+
 class TodayScreen extends ConsumerStatefulWidget {
   const TodayScreen({super.key});
 
@@ -33,7 +45,6 @@ class _TodayScreenState extends ConsumerState<TodayScreen> {
   Duration _countdownDuration = Duration.zero;
   String? _nextEventName;
   String? _nextEventDua;
-
   @override
   void initState() {
     super.initState();
@@ -139,6 +150,85 @@ class _TodayScreenState extends ConsumerState<TodayScreen> {
     }
   }
 
+  /// Fenêtre "Avant Iftar" : 45 minutes avant Maghrib
+  static const int _beforeIftarMinutes = 45;
+
+  RamadanPhase _getRamadanPhase(PrayerTimes prayerTimes, DateTime now) {
+    if (now.isBefore(prayerTimes.fajr)) {
+      return RamadanPhase.suhoor;
+    }
+    final iftarWindowStart =
+        prayerTimes.maghrib.subtract(Duration(minutes: _beforeIftarMinutes));
+    if (now.isBefore(iftarWindowStart)) {
+      return RamadanPhase.fastingDay;
+    }
+    if (now.isBefore(prayerTimes.maghrib)) {
+      return RamadanPhase.beforeIftar;
+    }
+    if (now.isBefore(prayerTimes.isha)) {
+      return RamadanPhase.fastingDay; // Après Maghrib, avant Isha = soirée
+    }
+    return RamadanPhase.night;
+  }
+
+  /// Titre court pour la carte hero selon la phase
+  String _getPhaseTitle(RamadanPhase phase) {
+    switch (phase) {
+      case RamadanPhase.suhoor:
+        return 'C\'est le moment du Suhoor';
+      case RamadanPhase.fastingDay:
+        return 'Temps restant avant l\'Iftar';
+      case RamadanPhase.beforeIftar:
+        return 'Moment des invocations';
+      case RamadanPhase.night:
+        return 'La nuit, moment de proximité';
+    }
+  }
+
+  /// Sous-titre / message spirituel selon la phase
+  String _getPhaseMessage(RamadanPhase phase) {
+    switch (phase) {
+      case RamadanPhase.suhoor:
+        return 'Niyyah et bénédiction – N\'oublie pas l\'intention du jeûne';
+      case RamadanPhase.fastingDay:
+        return 'Patience et rappel – Que ce jour soit béni';
+      case RamadanPhase.beforeIftar:
+        return 'C\'est l\'heure où les invocations sont exaucées';
+      case RamadanPhase.night:
+        return 'La nuit est un moment de proximité avec Allah';
+    }
+  }
+
+  /// Compte à rebours affiché (label)
+  String _getCountdownLabel(RamadanPhase phase, String? nextEventName) {
+    switch (phase) {
+      case RamadanPhase.suhoor:
+        return nextEventName == 'Suhoor'
+            ? 'Suhoor dans'
+            : 'Imsak dans';
+      case RamadanPhase.fastingDay:
+        return 'Iftar dans';
+      case RamadanPhase.beforeIftar:
+        return 'Iftar dans';
+      case RamadanPhase.night:
+        return 'Suhoor demain dans';
+    }
+  }
+
+  /// Prochaine prière affichée
+  String _getNextPrayerLabel(RamadanPhase phase) {
+    switch (phase) {
+      case RamadanPhase.suhoor:
+        return 'Prochaine prière : Fajr';
+      case RamadanPhase.fastingDay:
+        return 'Prochaine prière';
+      case RamadanPhase.beforeIftar:
+        return 'Prochaine prière : Maghrib';
+      case RamadanPhase.night:
+        return 'Tarawih / Qiyam';
+    }
+  }
+
   String _getMonthName(int month) {
     const months = [
       'janvier',
@@ -200,15 +290,37 @@ class _TodayScreenState extends ConsumerState<TodayScreen> {
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    // Primary Countdown Card - Hero Section
+                    // Primary Countdown Card - Hero Section (Ramadan Vision)
                     _buildSection(
                       child: prayerTimesAsync.when(
-                        data: (prayerTimes) => prayerTimes != null
-                            ? _buildCountdownCard(isDark, prayerTimes)
-                            : _buildEmptyState(
-                                isDark,
-                                'Chargement des horaires...',
-                              ),
+                        data: (prayerTimes) {
+                          if (prayerTimes == null) {
+                            return _buildEmptyState(
+                              isDark,
+                              'Chargement des horaires...',
+                            );
+                          }
+                          final phase = _getRamadanPhase(
+                            prayerTimes,
+                            DateTime.now(),
+                          );
+                          return Column(
+                            crossAxisAlignment: CrossAxisAlignment.stretch,
+                            children: [
+                              _buildCountdownCard(isDark, prayerTimes),
+                              if (phase == RamadanPhase.night) ...[
+                                SizedBox(
+                                  height: ResponsiveUtils.adaptivePadding(
+                                    context,
+                                    mobile: AppTheme.paddingLarge,
+                                    tablet: AppTheme.paddingXLarge,
+                                  ),
+                                ),
+                                _buildLastReadingCard(isDark),
+                              ],
+                            ],
+                          );
+                        },
                         loading: () => _buildCountdownCardShimmer(isDark),
                         error: (_, __) => _buildEmptyState(
                           isDark,
@@ -223,6 +335,36 @@ class _TodayScreenState extends ConsumerState<TodayScreen> {
                         mobile: AppTheme.paddingLarge,
                         tablet: AppTheme.paddingXLarge,
                       ),
+                    ),
+
+                    // Indicateur discret "En jeûne" (journée de jeûne)
+                    prayerTimesAsync.when(
+                      data: (prayerTimes) {
+                        if (prayerTimes == null) return const SizedBox.shrink();
+                        final phase = _getRamadanPhase(
+                          prayerTimes,
+                          DateTime.now(),
+                        );
+                        if (phase != RamadanPhase.fastingDay) {
+                          return const SizedBox.shrink();
+                        }
+                        return Column(
+                          crossAxisAlignment: CrossAxisAlignment.stretch,
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            _buildFastingDayIndicator(isDark),
+                            SizedBox(
+                              height: ResponsiveUtils.adaptivePadding(
+                                context,
+                                mobile: AppTheme.paddingMedium,
+                                tablet: AppTheme.paddingLarge,
+                              ),
+                            ),
+                          ],
+                        );
+                      },
+                      loading: () => const SizedBox.shrink(),
+                      error: (_, __) => const SizedBox.shrink(),
                     ),
 
                     // Moment of the Day
@@ -488,7 +630,7 @@ class _TodayScreenState extends ConsumerState<TodayScreen> {
               Expanded(
                 child: Text(
                   location != null
-                      ? '${location.city ?? 'Localisation'}'
+                      ? location.city ?? 'Localisation'
                       : 'Localisation',
                   style: TextStyle(
                     fontSize: ResponsiveUtils.adaptiveFontSize(
@@ -556,10 +698,15 @@ class _TodayScreenState extends ConsumerState<TodayScreen> {
   }
 
   Widget _buildCountdownCard(bool isDark, PrayerTimes prayerTimes) {
+    final now = DateTime.now();
+    final phase = _getRamadanPhase(prayerTimes, now);
     final hours = _countdownDuration.inHours;
     final minutes = _countdownDuration.inMinutes.remainder(60);
     final countdownText =
         '${hours.toString().padLeft(2, '0')}:${minutes.toString().padLeft(2, '0')}';
+
+    final isBeforeIftar = phase == RamadanPhase.beforeIftar;
+    final isNight = phase == RamadanPhase.night;
 
     return Container(
       padding: EdgeInsets.all(
@@ -580,11 +727,17 @@ class _TodayScreenState extends ConsumerState<TodayScreen> {
                 end: Alignment.bottomRight,
               )
             : LinearGradient(
-                colors: [
-                  AppColors.luxuryGold.withOpacity(0.15),
-                  AppColors.paleGold.withOpacity(0.8),
-                  AppColors.luxuryGold.withOpacity(0.1),
-                ],
+                colors: isBeforeIftar
+                    ? [
+                        AppColors.luxuryGold.withOpacity(0.2),
+                        AppColors.paleGold.withOpacity(0.9),
+                        AppColors.luxuryGold.withOpacity(0.12),
+                      ]
+                    : [
+                        AppColors.luxuryGold.withOpacity(0.15),
+                        AppColors.paleGold.withOpacity(0.8),
+                        AppColors.luxuryGold.withOpacity(0.1),
+                      ],
                 begin: Alignment.topLeft,
                 end: Alignment.bottomRight,
               ),
@@ -593,7 +746,7 @@ class _TodayScreenState extends ConsumerState<TodayScreen> {
         ),
         boxShadow: [
           BoxShadow(
-            color: AppColors.luxuryGold.withOpacity(0.2),
+            color: AppColors.luxuryGold.withOpacity(isBeforeIftar ? 0.35 : 0.2),
             blurRadius: 20,
             offset: const Offset(0, 8),
             spreadRadius: 2,
@@ -601,72 +754,147 @@ class _TodayScreenState extends ConsumerState<TodayScreen> {
           ...AppColors.cardShadow,
         ],
         border: Border.all(
-          color: AppColors.luxuryGold.withOpacity(0.4),
-          width: 2.5,
+          color: AppColors.luxuryGold.withOpacity(isBeforeIftar ? 0.55 : 0.4),
+          width: isBeforeIftar ? 3 : 2.5,
         ),
       ),
       child: Column(
         mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          Row(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              Icon(
-                _getEventIcon(_nextEventName ?? ''),
-                color: AppColors.luxuryGold,
-                size: ResponsiveUtils.adaptiveIconSize(context, base: 20),
-              ),
-              const SizedBox(width: 8),
-              Flexible(
-                child: Text(
-                  '$_nextEventName dans',
-                  style: TextStyle(
-                    fontSize: ResponsiveUtils.adaptiveFontSize(
-                      context,
-                      mobile: 16,
-                      tablet: 18,
-                      desktop: 20,
-                    ),
-                    fontWeight: FontWeight.w600,
-                    color: isDark
-                        ? AppColors.darkTextSecondary
-                        : AppColors.textSecondary,
-                    letterSpacing: 0.5,
-                  ),
-                  textAlign: TextAlign.center,
-                ),
-              ),
-            ],
-          ),
-          SizedBox(
-            height: ResponsiveUtils.adaptivePadding(
-              context,
-              mobile: AppTheme.paddingLarge,
-              tablet: AppTheme.paddingXLarge,
-            ),
-          ),
+          // Titre de phase (Que dois-je faire maintenant ?)
           Text(
-            countdownText,
+            _getPhaseTitle(phase),
             style: TextStyle(
               fontSize: ResponsiveUtils.adaptiveFontSize(
                 context,
-                mobile: 56,
-                tablet: 72,
-                desktop: 88,
+                mobile: 18,
+                tablet: 20,
+                desktop: 22,
               ),
-              fontWeight: FontWeight.w900,
-              color: AppColors.luxuryGold,
-              fontFeatures: const [FontFeature.tabularFigures()],
-              letterSpacing: -2,
-              shadows: [
-                Shadow(
-                  color: AppColors.luxuryGold.withOpacity(0.3),
-                  blurRadius: 10,
-                  offset: const Offset(0, 4),
+              fontWeight: FontWeight.bold,
+              color: isDark
+                  ? AppColors.pureWhite
+                  : AppColors.textPrimary,
+              letterSpacing: -0.3,
+            ),
+          ),
+          SizedBox(
+            height: ResponsiveUtils.adaptivePadding(
+              context,
+              mobile: 4,
+              tablet: 6,
+            ),
+          ),
+          Text(
+            _getPhaseMessage(phase),
+            style: TextStyle(
+              fontSize: ResponsiveUtils.adaptiveFontSize(
+                context,
+                mobile: 13,
+                tablet: 14,
+                desktop: 15,
+              ),
+              fontWeight: FontWeight.w500,
+              color: isDark
+                  ? AppColors.darkTextSecondary
+                  : AppColors.textSecondary,
+              height: 1.35,
+            ),
+          ),
+          SizedBox(
+            height: ResponsiveUtils.adaptivePadding(
+              context,
+              mobile: AppTheme.paddingMedium,
+              tablet: AppTheme.paddingLarge,
+            ),
+          ),
+          // Compte à rebours (sauf en mode Nuit où on peut afficher autre chose)
+          if (!isNight) ...[
+            Row(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                Icon(
+                  _getEventIcon(_nextEventName ?? ''),
+                  color: AppColors.luxuryGold,
+                  size: ResponsiveUtils.adaptiveIconSize(context, base: 20),
+                ),
+                const SizedBox(width: 8),
+                Flexible(
+                  child: Text(
+                    _getCountdownLabel(phase, _nextEventName),
+                    style: TextStyle(
+                      fontSize: ResponsiveUtils.adaptiveFontSize(
+                        context,
+                        mobile: 15,
+                        tablet: 17,
+                        desktop: 19,
+                      ),
+                      fontWeight: FontWeight.w600,
+                      color: isDark
+                          ? AppColors.darkTextSecondary
+                          : AppColors.textSecondary,
+                      letterSpacing: 0.5,
+                    ),
+                    textAlign: TextAlign.center,
+                  ),
                 ),
               ],
             ),
-          ),
+            SizedBox(
+              height: ResponsiveUtils.adaptivePadding(
+                context,
+                mobile: AppTheme.paddingMedium,
+                tablet: AppTheme.paddingLarge,
+              ),
+            ),
+            Text(
+              countdownText,
+              style: TextStyle(
+                fontSize: ResponsiveUtils.adaptiveFontSize(
+                  context,
+                  mobile: 52,
+                  tablet: 68,
+                  desktop: 84,
+                ),
+                fontWeight: FontWeight.w900,
+                color: AppColors.luxuryGold,
+                fontFeatures: const [FontFeature.tabularFigures()],
+                letterSpacing: -2,
+                shadows: [
+                  Shadow(
+                    color: AppColors.luxuryGold.withOpacity(0.3),
+                    blurRadius: 10,
+                    offset: const Offset(0, 4),
+                  ),
+                ],
+              ),
+              textAlign: TextAlign.center,
+            ),
+            SizedBox(
+              height: ResponsiveUtils.adaptivePadding(
+                context,
+                mobile: AppTheme.paddingSmall,
+                tablet: AppTheme.paddingMedium,
+              ),
+            ),
+            Text(
+              _getNextPrayerLabel(phase), // Prochaine prière
+              style: TextStyle(
+                fontSize: ResponsiveUtils.adaptiveFontSize(
+                  context,
+                  mobile: 12,
+                  tablet: 13,
+                  desktop: 14,
+                ),
+                fontWeight: FontWeight.w500,
+                color: isDark
+                    ? AppColors.pureWhite.withOpacity(0.7)
+                    : AppColors.textSecondary,
+              ),
+              textAlign: TextAlign.center,
+            ),
+          ],
           SizedBox(
             height: ResponsiveUtils.adaptivePadding(
               context,
@@ -674,7 +902,8 @@ class _TodayScreenState extends ConsumerState<TodayScreen> {
               tablet: AppTheme.paddingXLarge,
             ),
           ),
-          if (_nextEventDua != null)
+          // Verset / invocation (phase-specific)
+          if (_nextEventDua != null && !isNight)
             Container(
               padding: EdgeInsets.symmetric(
                 horizontal: ResponsiveUtils.adaptivePadding(
@@ -697,9 +926,9 @@ class _TodayScreenState extends ConsumerState<TodayScreen> {
                 style: TextStyle(
                   fontSize: ResponsiveUtils.adaptiveFontSize(
                     context,
-                    mobile: 18,
-                    tablet: 20,
-                    desktop: 22,
+                    mobile: 17,
+                    tablet: 19,
+                    desktop: 21,
                   ),
                   fontFamily: 'Cairo',
                   color: isDark
@@ -710,6 +939,109 @@ class _TodayScreenState extends ConsumerState<TodayScreen> {
                 textAlign: TextAlign.center,
               ),
             ),
+          // Rappel doux Suhoor
+          if (phase == RamadanPhase.suhoor) ...[
+            SizedBox(
+              height: ResponsiveUtils.adaptivePadding(
+                context,
+                mobile: AppTheme.paddingSmall,
+                tablet: AppTheme.paddingMedium,
+              ),
+            ),
+            Container(
+              padding: EdgeInsets.symmetric(
+                horizontal: ResponsiveUtils.adaptivePadding(
+                  context,
+                  mobile: AppTheme.paddingMedium,
+                ),
+                vertical: ResponsiveUtils.adaptivePadding(
+                  context,
+                  mobile: 8,
+                  tablet: 10,
+                ),
+              ),
+              decoration: BoxDecoration(
+                color: AppColors.luxuryGold.withOpacity(0.12),
+                borderRadius: BorderRadius.circular(10),
+                border: Border.all(
+                  color: AppColors.luxuryGold.withOpacity(0.25),
+                  width: 1,
+                ),
+              ),
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  Icon(
+                    Icons.volunteer_activism,
+                    color: AppColors.luxuryGold,
+                    size: ResponsiveUtils.adaptiveIconSize(context, base: 18),
+                  ),
+                  const SizedBox(width: 8),
+                  Flexible(
+                    child: Text(
+                      'N\'oublie pas l\'intention du jeûne',
+                      style: TextStyle(
+                        fontSize: ResponsiveUtils.adaptiveFontSize(
+                          context,
+                          mobile: 13,
+                          tablet: 14,
+                          desktop: 15,
+                        ),
+                        fontWeight: FontWeight.w500,
+                        color: isDark
+                            ? AppColors.luxuryGold
+                            : AppColors.deepBlue,
+                      ),
+                      textAlign: TextAlign.center,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ],
+          // Nuit : message de quiétude + countdown discret vers Suhoor demain
+          if (isNight) ...[
+            Text(
+              'Repose-toi et reprends ta lecture quand tu le souhaites.',
+              style: TextStyle(
+                fontSize: ResponsiveUtils.adaptiveFontSize(
+                  context,
+                  mobile: 15,
+                  tablet: 16,
+                  desktop: 17,
+                ),
+                fontStyle: FontStyle.italic,
+                color: isDark
+                    ? AppColors.darkTextSecondary
+                    : AppColors.textSecondary,
+                height: 1.5,
+              ),
+              textAlign: TextAlign.center,
+            ),
+            SizedBox(
+              height: ResponsiveUtils.adaptivePadding(
+                context,
+                mobile: AppTheme.paddingMedium,
+                tablet: AppTheme.paddingLarge,
+              ),
+            ),
+            Text(
+              '$_nextEventName demain dans $countdownText',
+              style: TextStyle(
+                fontSize: ResponsiveUtils.adaptiveFontSize(
+                  context,
+                  mobile: 13,
+                  tablet: 14,
+                  desktop: 15,
+                ),
+                fontWeight: FontWeight.w500,
+                color: isDark
+                    ? AppColors.pureWhite.withOpacity(0.6)
+                    : AppColors.textSecondary,
+              ),
+              textAlign: TextAlign.center,
+            ),
+          ],
         ],
       ),
     );
@@ -743,6 +1075,216 @@ class _TodayScreenState extends ConsumerState<TodayScreen> {
         ),
       ),
       child: const Center(child: CircularProgressIndicator()),
+    );
+  }
+
+  /// Carte "Reprise de la dernière lecture" (phase Nuit)
+  Widget _buildLastReadingCard(bool isDark) {
+    final lastReadSurahNumber = ref.watch(lastReadSurahProvider);
+    final lastReadAyah = ref.watch(lastReadAyahProvider);
+    final surahsAsync = ref.watch(surahsProvider);
+
+    if (lastReadSurahNumber <= 0) {
+      return const SizedBox.shrink();
+    }
+
+    return surahsAsync.when(
+      data: (apiSurahs) {
+        if (apiSurahs.isEmpty) return const SizedBox.shrink();
+        final matches = apiSurahs
+            .where((s) => s.number == lastReadSurahNumber)
+            .toList();
+        if (matches.isEmpty) return const SizedBox.shrink();
+        final surahModel = matches.first;
+        final surah = SurahAdapter.fromApiModel(surahModel);
+          return Material(
+            color: Colors.transparent,
+            child: InkWell(
+              onTap: () {
+                HapticFeedback.lightImpact();
+                Navigator.push(
+                  context,
+                  MaterialPageRoute(
+                    builder: (context) => SurahDetailScreen(
+                      surah: surah,
+                      initialAyahNumber: lastReadAyah > 0 ? lastReadAyah : null,
+                    ),
+                  ),
+                );
+              },
+              borderRadius: BorderRadius.circular(
+                ResponsiveUtils.adaptiveBorderRadius(context) + 4,
+              ),
+              child: Container(
+                padding: EdgeInsets.all(
+                  ResponsiveUtils.adaptivePadding(
+                    context,
+                    mobile: AppTheme.paddingLarge,
+                    tablet: AppTheme.paddingXLarge,
+                  ),
+                ),
+                decoration: BoxDecoration(
+                  gradient: LinearGradient(
+                    colors: [
+                      AppColors.luxuryGold.withOpacity(0.12),
+                      AppColors.luxuryGold.withOpacity(0.05),
+                    ],
+                    begin: Alignment.topLeft,
+                    end: Alignment.bottomRight,
+                  ),
+                  borderRadius: BorderRadius.circular(
+                    ResponsiveUtils.adaptiveBorderRadius(context) + 4,
+                  ),
+                  border: Border.all(
+                    color: AppColors.luxuryGold.withOpacity(0.3),
+                    width: 1.5,
+                  ),
+                ),
+                child: Row(
+                  children: [
+                    Container(
+                      padding: EdgeInsets.all(
+                        ResponsiveUtils.adaptivePadding(
+                          context,
+                          mobile: 12,
+                          tablet: 14,
+                        ),
+                      ),
+                      decoration: BoxDecoration(
+                        gradient: AppColors.goldAccent,
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                      child: Icon(
+                        Icons.menu_book,
+                        color: isDark
+                            ? AppColors.darkBackground
+                            : AppColors.deepBlue,
+                        size: ResponsiveUtils.adaptiveIconSize(
+                          context,
+                          base: 24,
+                        ),
+                      ),
+                    ),
+                    SizedBox(
+                      width: ResponsiveUtils.adaptivePadding(
+                        context,
+                        mobile: AppTheme.paddingMedium,
+                        tablet: AppTheme.paddingLarge,
+                      ),
+                    ),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            'Reprendre la lecture',
+                            style: TextStyle(
+                              fontSize: ResponsiveUtils.adaptiveFontSize(
+                                context,
+                                mobile: 12,
+                                tablet: 13,
+                                desktop: 14,
+                              ),
+                              fontWeight: FontWeight.w600,
+                              color: isDark
+                                  ? AppColors.darkTextSecondary
+                                  : AppColors.textSecondary,
+                            ),
+                          ),
+                          const SizedBox(height: 4),
+                          Text(
+                            surah.name,
+                            style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                              fontWeight: FontWeight.bold,
+                            ),
+                            overflow: TextOverflow.ellipsis,
+                            maxLines: 1,
+                          ),
+                          if (lastReadAyah > 0)
+                            Text(
+                              'Ayah $lastReadAyah',
+                              style: Theme.of(context).textTheme.bodySmall,
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                        ],
+                      ),
+                    ),
+                    Icon(
+                      Icons.arrow_forward_ios,
+                      size: ResponsiveUtils.adaptiveIconSize(
+                        context,
+                        base: 18,
+                      ),
+                      color: AppColors.luxuryGold,
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          );
+      },
+      loading: () => const SizedBox.shrink(),
+      error: (_, __) => const SizedBox.shrink(),
+    );
+  }
+
+  /// Indicateur visuel discret "En jeûne" (phase journée)
+  Widget _buildFastingDayIndicator(bool isDark) {
+    return Container(
+      padding: EdgeInsets.symmetric(
+        vertical: ResponsiveUtils.adaptivePadding(
+          context,
+          mobile: 10,
+          tablet: 12,
+        ),
+        horizontal: ResponsiveUtils.adaptivePadding(
+          context,
+          mobile: AppTheme.paddingMedium,
+          tablet: AppTheme.paddingLarge,
+        ),
+      ),
+      decoration: BoxDecoration(
+        color: isDark
+            ? AppColors.darkCard.withOpacity(0.6)
+            : AppColors.paleGold.withOpacity(0.4),
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(
+          color: AppColors.luxuryGold.withOpacity(0.2),
+          width: 1,
+        ),
+      ),
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          Icon(
+            Icons.self_improvement,
+            size: ResponsiveUtils.adaptiveIconSize(context, base: 18),
+            color: AppColors.luxuryGold.withOpacity(0.9),
+          ),
+          SizedBox(width: ResponsiveUtils.adaptivePadding(context, mobile: 8)),
+          Expanded(
+            child: Text(
+            'En jeûne – Que la patience t’accompagne',
+            style: TextStyle(
+              fontSize: ResponsiveUtils.adaptiveFontSize(
+                context,
+                mobile: 13,
+                tablet: 14,
+                desktop: 15,
+              ),
+              fontWeight: FontWeight.w500,
+              color: isDark
+                  ? AppColors.darkTextSecondary
+                  : AppColors.textSecondary,
+              fontStyle: FontStyle.italic,
+            ),
+              maxLines: 2,
+              overflow: TextOverflow.ellipsis,
+              textAlign: TextAlign.center,
+            ),
+          ),
+        ],
+      ),
     );
   }
 
