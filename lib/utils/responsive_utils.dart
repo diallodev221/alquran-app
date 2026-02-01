@@ -77,6 +77,10 @@ class ResponsiveUtils {
     }
   }
 
+  /// Taille de police pour le texte Quran : 100 % partout (même font, même taille sur tous les appareils).
+  static double quranFontSize(BuildContext context, double baseSize) =>
+      baseSize;
+
   /// Largeur maximale pour le contenu (empêche les lignes trop longues)
   static double maxContentWidth(BuildContext context) {
     final width = screenWidth(context);
