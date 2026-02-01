@@ -233,7 +233,7 @@ class AudioService {
     }
   }
 
-  /// Liste des récitateurs recommandés (hardcodés pour performance)
+  /// Liste des récitateurs (une seule source pour tout l’app : affichage, paramètres, audio).
   static List<Map<String, String>> get popularReciters => [
     {
       'id': 'ar.alafasy',
@@ -264,6 +264,26 @@ class AudioService {
       'id': 'ar.shaatree',
       'name': 'Abu Bakr al-Shatri',
       'arabicName': 'أبو بكر الشاطري',
+    },
+    {
+      'id': 'ar.hani',
+      'name': 'Hani Ar-Rifai',
+      'arabicName': 'هاني الرفاعي',
+    },
+    {
+      'id': 'ar.abdulsamad',
+      'name': 'Abdul Basit (Mujawwad)',
+      'arabicName': 'عبد الباسط عبد الصمد (مجود)',
+    },
+    {
+      'id': 'ar.mahermuaiqly',
+      'name': 'Maher Al-Muaiqly',
+      'arabicName': 'ماهر المعيقلي',
+    },
+    {
+      'id': 'ar.sudais',
+      'name': 'Abdurrahman As-Sudais',
+      'arabicName': 'عبد الرحمن السديس',
     },
   ];
 }

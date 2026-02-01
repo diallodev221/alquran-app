@@ -43,11 +43,12 @@ class _AutoPlayListenerState extends ConsumerState<AutoPlayListener> {
 
       await surahsAsync.when(
         data: (apiSurahs) async {
+          if (apiSurahs.isEmpty) return;
           final allSurahs = SurahAdapter.fromApiModelList(apiSurahs);
-          final nextSurah = allSurahs.firstWhere(
-            (s) => s.number == surahNumber,
-            orElse: () => allSurahs.first,
-          );
+          final matches =
+              allSurahs.where((s) => s.number == surahNumber).toList();
+          if (matches.isEmpty) return;
+          final nextSurah = matches.first;
 
           // Récupérer les URLs audio
           final audioService = ref.read(audioServiceProvider);
