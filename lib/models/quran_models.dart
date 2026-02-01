@@ -1,4 +1,5 @@
 /// Modèles de données pour l'API Al-Quran Cloud
+library;
 
 class SurahModel {
   final int number;

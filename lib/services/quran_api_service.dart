@@ -3,6 +3,7 @@ import 'package:dio_smart_retry/dio_smart_retry.dart';
 import 'package:flutter/foundation.dart';
 import '../core/exceptions/api_exceptions.dart';
 import '../models/quran_models.dart';
+import '../utils/available_translations.dart';
 import 'cache_service.dart';
 import 'memory_cache_service.dart';
 import 'package:hive/hive.dart';
@@ -271,50 +272,52 @@ class QuranApiService {
     }
   }
 
-  /// GET /edition/type/translation - Récupère les traductions disponibles
+  /// Éditions script (Tanzil uniquement) — plus d'appel api.alquran.cloud.
+  static List<EditionModel> get defaultQuranEditions => [
+        EditionModel(
+          identifier: 'quran-uthmani',
+          language: 'ar',
+          name: 'Uthmani',
+          englishName: 'Uthmani (Tanzil)',
+          format: 'text',
+          type: 'quran',
+        ),
+        EditionModel(
+          identifier: 'quran-madinah',
+          language: 'ar',
+          name: 'Madinah',
+          englishName: 'Madinah (Tanzil)',
+          format: 'text',
+          type: 'quran',
+        ),
+      ];
+
+  /// Éditions traduction (liste statique, compatible Tanzil) — plus d'appel api.alquran.cloud.
+  static List<EditionModel> get defaultTranslationEditions {
+    final list = <EditionModel>[];
+    for (final category in AvailableTranslations.all.values) {
+      for (final t in category) {
+        final lang = t['language'] ?? 'en';
+        final name = t['name'] ?? t['id'] ?? '';
+        list.add(EditionModel(
+          identifier: t['id'] ?? '',
+          language: lang,
+          name: name,
+          englishName: name,
+          format: 'text',
+          type: 'translation',
+        ));
+      }
+    }
+    return list;
+  }
+
+  /// Éditions (Tanzil / liste statique uniquement). Aucun appel à api.alquran.cloud.
   Future<List<EditionModel>> getEditions({String type = 'translation'}) async {
-    final cacheKey = 'editions_$type';
-
-    // Cache
-    final cached = _cacheService.getIfValid<List>(
-      cacheKey,
-      (data) => (data as List).map((e) => EditionModel.fromJson(e)).toList(),
-    );
-
-    if (cached != null) {
-      return cached as List<EditionModel>;
+    if (type == 'quran') {
+      return defaultQuranEditions;
     }
-
-    try {
-      final response = await _dio.get('/edition/type/$type');
-
-      if (response.statusCode == 200) {
-        final data = response.data as Map<String, dynamic>;
-        final editions = (data['data'] as List)
-            .map((e) => EditionModel.fromJson(e as Map<String, dynamic>))
-            .toList();
-
-        await _cacheService.saveWithExpiry(
-          cacheKey,
-          editions.map((e) => e.toJson()).toList(),
-          duration: CacheService.staticContentDuration,
-        );
-
-        return editions;
-      }
-      throw ServerException('Failed to fetch editions');
-    } on DioException catch (e) {
-      final staleCache = _cacheService.getStale<List>(
-        cacheKey,
-        (data) => (data as List).map((e) => EditionModel.fromJson(e)).toList(),
-      );
-
-      if (staleCache != null) {
-        return staleCache as List<EditionModel>;
-      }
-
-      throw _handleDioError(e);
-    }
+    return defaultTranslationEditions;
   }
 
   /// Gestion centralisée des erreurs Dio

@@ -1,22 +1,23 @@
 import 'package:flutter/foundation.dart';
+import 'connectivity_service.dart';
 import 'quran_api_service.dart';
 import 'audio_service.dart';
 import 'settings_service.dart';
 
-/// Service de préchargement des données importantes
-/// Charge les données au démarrage pour une expérience fluide
+/// Service de préchargement (audio uniquement — texte 100 % offline, Tanzil).
 class PreloadService {
-  final QuranApiService _quranApiService;
   final AudioService _audioService;
   final SettingsService _settingsService;
+  final ConnectivityService _connectivity;
 
   PreloadService({
     required QuranApiService quranApiService,
     required AudioService audioService,
     required SettingsService settingsService,
-  })  : _quranApiService = quranApiService,
-        _audioService = audioService,
-        _settingsService = settingsService;
+    ConnectivityService? connectivity,
+  })  : _audioService = audioService,
+        _settingsService = settingsService,
+        _connectivity = connectivity ?? ConnectivityService();
 
   /// Précharge les données essentielles
   /// Retourne le nombre d'éléments préchargés
@@ -34,15 +35,7 @@ class PreloadService {
       await _settingsService.init();
       loadedCount++;
 
-      // 2. Charger la liste des sourates (essentiel)
-      try {
-        await _quranApiService.getAllSurahs();
-        loadedCount++;
-        debugPrint('✅ Preloaded: All surahs list');
-      } catch (e) {
-        errorCount++;
-        debugPrint('❌ Failed to preload surahs list: $e');
-      }
+      // 2. Texte Qur'an : 100 % offline (Tanzil). Aucun appel API pour le texte.
 
       // 3. Récupérer le récitateur sélectionné
       String selectedReciter = AudioService.defaultReciter;
@@ -52,39 +45,28 @@ class PreloadService {
         debugPrint('⚠️ Could not get selected reciter, using default');
       }
 
-      // 4. Précharger les premières sourates (1 à preloadSurahsCount)
-      // Faire cela en parallèle pour plus de rapidité
+      // 4. Précharger l'audio uniquement si connecté (évite les erreurs réseau répétées)
       final preloadFutures = <Future<void>>[];
-
-      for (int i = 1; i <= preloadSurahsCount && i <= 114; i++) {
-        // Précharger le détail de la sourate
-        preloadFutures.add(
-          _quranApiService
-              .getSurahDetail(
-                i,
-                translationEdition: 'fr.hamidullah',
-              )
-              .then((_) {
-                loadedCount++;
-                debugPrint('✅ Preloaded: Surah $i detail');
-              }).catchError((e) {
-                errorCount++;
-                debugPrint('❌ Failed to preload surah $i detail: $e');
-              }),
+      final isOnline = await _connectivity.isConnected();
+      if (!isOnline) {
+        debugPrint(
+          '📴 Offline: skipping audio preload. Text remains available (Tanzil).',
         );
-
-        // Précharger les URLs audio
-        preloadFutures.add(
-          _audioService
-              .getSurahAudioUrls(i, reciter: selectedReciter)
-              .then((_) {
-                loadedCount++;
-                debugPrint('✅ Preloaded: Surah $i audio URLs');
-              }).catchError((e) {
-                errorCount++;
-                debugPrint('❌ Failed to preload surah $i audio: $e');
-              }),
-        );
+      } else {
+        for (int i = 1; i <= preloadSurahsCount && i <= 114; i++) {
+          preloadFutures.add(
+            _audioService
+                .getSurahAudioUrls(i, reciter: selectedReciter)
+                .then((_) {
+                  loadedCount++;
+                  debugPrint('✅ Preloaded: Surah $i audio URLs');
+                })
+                .catchError((e) {
+                  errorCount++;
+                  debugPrint('❌ Failed to preload surah $i audio: $e');
+                }),
+          );
+        }
       }
 
       // Attendre que tous les préchargements soient terminés
@@ -111,10 +93,11 @@ class PreloadService {
     }
   }
 
-  /// Précharge une sourate spécifique (pour préchargement intelligent)
+  /// Précharge l'audio d'une sourate (texte = offline Tanzil, jamais d'API).
   Future<void> preloadSurah(int surahNumber, {String? reciter}) async {
+    final isOnline = await _connectivity.isConnected();
+    if (!isOnline) return;
     try {
-      // Récupérer le récitateur si non fourni
       if (reciter == null) {
         try {
           reciter = await _settingsService.getSelectedReciter();
@@ -122,19 +105,10 @@ class PreloadService {
           reciter = AudioService.defaultReciter;
         }
       }
-
-      // Précharger en parallèle
-      await Future.wait([
-        _quranApiService.getSurahDetail(
-          surahNumber,
-          translationEdition: 'fr.hamidullah',
-        ),
-        _audioService.getSurahAudioUrls(surahNumber, reciter: reciter),
-      ], eagerError: false);
-
-      debugPrint('✅ Preloaded surah $surahNumber');
+      await _audioService.getSurahAudioUrls(surahNumber, reciter: reciter);
+      debugPrint('✅ Preloaded surah $surahNumber audio');
     } catch (e) {
-      debugPrint('⚠️ Failed to preload surah $surahNumber: $e');
+      debugPrint('⚠️ Failed to preload surah $surahNumber audio: $e');
     }
   }
 
@@ -174,4 +148,3 @@ class PreloadResult {
   bool get isSuccess => errorCount == 0;
   double get successRate => loadedCount / (loadedCount + errorCount);
 }
-

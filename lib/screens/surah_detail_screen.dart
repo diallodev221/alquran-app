@@ -17,6 +17,8 @@ import '../services/preload_service.dart';
 import '../services/settings_service.dart';
 import '../utils/available_translations.dart';
 import '../utils/juz_utils.dart';
+import '../utils/tanzil_pause_marks.dart';
+import '../widgets/mini_audio_player.dart';
 
 class SurahDetailScreen extends ConsumerStatefulWidget {
   final Surah surah;
@@ -59,6 +61,7 @@ class _SurahDetailScreenState extends ConsumerState<SurahDetailScreen>
   bool _showBottomBar = true; // Afficher/masquer la barre audio en bas
   Timer? _hideBottomBarTimer; // Timer pour masquer la barre après 2s
   Timer? _scrollStopTimer; // Timer pour masquer la barre après arrêt du scroll
+  Timer? _saveLastReadTimer; // Debounce pour sauvegarder la dernière lecture
 
   @override
   void initState() {
@@ -72,10 +75,16 @@ class _SurahDetailScreenState extends ConsumerState<SurahDetailScreen>
     _scrollController.addListener(_onScroll);
     _animationController.forward();
 
-    // Précharger les sourates adjacentes en arrière-plan
+    // Précharger la sourate courante (audio) et les adjacentes en arrière-plan
     WidgetsBinding.instance.addPostFrameCallback((_) {
+      _preloadCurrentSurahAudio();
       _preloadAdjacentSurahs();
     });
+  }
+
+  /// Précharge les URLs audio de la sourate affichée en arrière-plan pour une lecture immédiate
+  void _preloadCurrentSurahAudio() {
+    ref.read(surahAudioUrlsProvider(widget.surah.number));
   }
 
   /// Précharge les sourates adjacentes pour une navigation fluide
@@ -103,10 +112,29 @@ class _SurahDetailScreenState extends ConsumerState<SurahDetailScreen>
 
   @override
   void dispose() {
+    _saveLastReadTimer?.cancel();
+    _persistLastRead();
     _animationController.dispose();
     _scrollController.dispose();
     _continuousScrollTimer?.cancel();
     super.dispose();
+  }
+
+  /// Sauvegarde la dernière lecture (sourate + verset) pour continuité. Debounced au scroll.
+  void _persistLastRead() {
+    if (!_scrollController.hasClients) return;
+    final extent = _scrollController.position.maxScrollExtent;
+    final offset = _scrollController.offset;
+    final n = widget.surah.numberOfAyahs;
+    if (n <= 0 || extent <= 0) return;
+    final ratio = (offset / extent).clamp(0.0, 1.0);
+    final ayah1Based = (ratio * n).round().clamp(1, n);
+    ref.read(lastReadSurahProvider.notifier).state = widget.surah.number;
+    ref.read(lastReadAyahProvider.notifier).state = ayah1Based;
+    SettingsService().setLastRead(
+      surahNumber: widget.surah.number,
+      ayahNumber: ayah1Based,
+    );
   }
 
   void _onScroll() {
@@ -146,6 +174,11 @@ class _SurahDetailScreenState extends ConsumerState<SurahDetailScreen>
       _lastManualScroll = DateTime.now();
       // Arrêter le scroll continu si l'utilisateur scroll manuellement
       _stopContinuousScroll();
+      // Sauvegarder la dernière lecture (debounced) pour continuité
+      _saveLastReadTimer?.cancel();
+      _saveLastReadTimer = Timer(const Duration(milliseconds: 800), () {
+        if (mounted) _persistLastRead();
+      });
       // Désactiver l'auto-scroll temporairement après un scroll manuel
       _shouldAutoScroll = false;
       // Réactiver après 3 secondes
@@ -739,7 +772,7 @@ class _SurahDetailScreenState extends ConsumerState<SurahDetailScreen>
 
           // Attendre que les données de la sourate soient chargées
           surahDetailAsync.whenData((surahDetail) async {
-            if (!mounted) return;
+            if (!mounted || surahDetail == null) return;
 
             // Attendre un court délai pour s'assurer que les données sont prêtes
             await Future.delayed(const Duration(milliseconds: 400));
@@ -795,6 +828,7 @@ class _SurahDetailScreenState extends ConsumerState<SurahDetailScreen>
 
     // Si un ayah initial est spécifié et les données sont chargées, scroller vers lui
     surahDetailAsync.whenData((surahDetail) {
+      if (surahDetail == null) return;
       if (!_hasScrolledToInitialAyah &&
           widget.initialAyahNumber != null &&
           widget.initialAyahNumber! > 0 &&
@@ -824,7 +858,7 @@ class _SurahDetailScreenState extends ConsumerState<SurahDetailScreen>
 
         // Récupérer la liste des sourates pour trouver la suivante
         final surahsAsync = ref.read(surahsProvider);
-        await surahsAsync.whenData((surahs) async {
+        surahsAsync.whenData((surahs) async {
           if (!mounted) return;
 
           final nextSurahIndex = surahs.indexWhere(
@@ -874,10 +908,44 @@ class _SurahDetailScreenState extends ConsumerState<SurahDetailScreen>
 
     return Scaffold(
       body: surahDetailAsync.when(
-        data: (surahDetail) =>
-            _buildContent(surahDetail, isDark, isSurahFavorite),
+        data: (surahDetail) => surahDetail == null
+            ? _buildDataUnavailable(isDark)
+            : _buildContent(surahDetail, isDark, isSurahFavorite),
         loading: () => _buildLoadingState(isDark),
         error: (error, stack) => _buildErrorState(error, isDark),
+      ),
+    );
+  }
+
+  /// Texte 100 % offline : base Tanzil absente ou vide.
+  Widget _buildDataUnavailable(bool isDark) {
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.all(24.0),
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Icon(Icons.menu_book_outlined, size: 64, color: Theme.of(context).colorScheme.outline),
+            const SizedBox(height: 16),
+            Text(
+              'Données non disponibles',
+              style: Theme.of(context).textTheme.titleLarge,
+              textAlign: TextAlign.center,
+            ),
+            const SizedBox(height: 8),
+            Text(
+              'La base Qur\'an (Tanzil) doit être fournie dans assets/db/quran.db pour la lecture offline.',
+              style: Theme.of(context).textTheme.bodyMedium,
+              textAlign: TextAlign.center,
+            ),
+            const SizedBox(height: 24),
+            TextButton.icon(
+              onPressed: () => Navigator.pop(context),
+              icon: const Icon(Icons.arrow_back),
+              label: const Text('Retour'),
+            ),
+          ],
+        ),
       ),
     );
   }
@@ -887,11 +955,6 @@ class _SurahDetailScreenState extends ConsumerState<SurahDetailScreen>
     bool isDark,
     bool isSurahFavorite,
   ) {
-    // Récupérer les URLs audio depuis l'API audio
-    final audioUrlsAsync = ref.watch(
-      surahAudioUrlsProvider(widget.surah.number),
-    );
-
     return Stack(
       children: [
         // Contenu principal
@@ -982,6 +1045,53 @@ class _SurahDetailScreenState extends ConsumerState<SurahDetailScreen>
               ),
               centerTitle: true,
               actions: [
+                // Continuer la lecture : aller au dernier verset lu (si cette sourate est la dernière lue)
+                Consumer(
+                  builder: (context, ref, _) {
+                    final lastSurah = ref.watch(lastReadSurahProvider);
+                    final lastAyah = ref.watch(lastReadAyahProvider);
+                    final isThisLastRead = lastSurah == widget.surah.number &&
+                        lastAyah > 0 &&
+                        lastAyah <= widget.surah.numberOfAyahs;
+                    if (!isThisLastRead) return const SizedBox.shrink();
+                    return Material(
+                      color: Colors.transparent,
+                      child: InkWell(
+                        onTap: () {
+                          HapticFeedback.lightImpact();
+                          _scrollToAyah(lastAyah - 1);
+                        },
+                        borderRadius: BorderRadius.circular(24),
+                        child: Tooltip(
+                          message: 'Reprendre ici (verset $lastAyah)',
+                          child: Container(
+                            margin: EdgeInsets.all(
+                              ResponsiveUtils.adaptivePadding(
+                                context,
+                                mobile: 8.0,
+                              ),
+                            ),
+                            decoration: BoxDecoration(
+                              color: AppColors.pureWhite.withOpacity(0.1),
+                              shape: BoxShape.circle,
+                            ),
+                            child: Icon(
+                              Icons.bookmark,
+                              color: AppColors.luxuryGold,
+                              size: ResponsiveUtils.adaptiveIconSize(
+                                context,
+                                base: 20.0,
+                              ),
+                            ),
+                          ),
+                        ),
+                      ),
+                    );
+                  },
+                ),
+                SizedBox(
+                  width: ResponsiveUtils.adaptivePadding(context, mobile: 4.0),
+                ),
                 // Settings icon - Responsive
                 Material(
                   color: Colors.transparent,
@@ -1016,70 +1126,61 @@ class _SurahDetailScreenState extends ConsumerState<SurahDetailScreen>
               ],
             ),
 
-            // Header simplifié avec barre décorative - Style image
+            // Nom arabe compact — transition entre app bar et contenu
             SliverToBoxAdapter(
               child: Container(
-                decoration: BoxDecoration(
-                  color: isDark
-                      ? AppColors.darkBackground
-                      : AppColors.pureWhite,
+                width: double.infinity,
+                padding: EdgeInsets.symmetric(
+                  vertical: ResponsiveUtils.adaptivePadding(
+                    context,
+                    mobile: 14.0,
+                    tablet: 16.0,
+                    desktop: 18.0,
+                  ),
+                  horizontal: ResponsiveUtils.adaptivePadding(
+                    context,
+                    mobile: 16.0,
+                    tablet: 20.0,
+                    desktop: 24.0,
+                  ),
                 ),
-                child: Column(
-                  children: [
-                    // Barre décorative avec nom arabe - Style image
-                    Container(
-                      width: double.infinity,
-                      padding: EdgeInsets.symmetric(
-                        vertical: ResponsiveUtils.adaptivePadding(
-                          context,
-                          mobile: 16.0,
-                          tablet: 20.0,
-                          desktop: 24.0,
-                        ),
-                      ),
-                      decoration: BoxDecoration(
-                        gradient: LinearGradient(
-                          colors: isDark
-                              ? [
-                                  AppColors.deepBlue.withOpacity(0.9),
-                                  AppColors.deepBlue.withOpacity(0.7),
-                                ]
-                              : [
-                                  AppColors.deepBlue,
-                                  AppColors.deepBlue.withOpacity(0.85),
-                                ],
-                        ),
-                      ),
-                      child: Center(
-                        child: Text(
-                          widget.surah.arabicName,
-                          style: TextStyle(
-                            fontFamily: 'Cairo',
-                            fontSize: ResponsiveUtils.adaptiveFontSize(
-                              context,
-                              mobile: 28,
-                              tablet: 32,
-                              desktop: 36,
-                            ),
-                            fontWeight: FontWeight.bold,
-                            color: AppColors.pureWhite,
-                            height: 1.4,
-                          ),
-                          textAlign: TextAlign.center,
-                          textDirection: TextDirection.rtl,
-                        ),
-                      ),
+                decoration: BoxDecoration(
+                  color: isDark ? AppColors.darkBackground : AppColors.pureWhite,
+                  border: Border(
+                    bottom: BorderSide(
+                      color: isDark
+                          ? AppColors.pureWhite.withOpacity(0.06)
+                          : AppColors.deepBlue.withOpacity(0.08),
+                      width: 1,
                     ),
-                    // Espacement minimal
-                    SizedBox(
-                      height: ResponsiveUtils.adaptivePadding(
+                  ),
+                ),
+                child: Center(
+                  child: Text(
+                    widget.surah.arabicName,
+                    style: TextStyle(
+                      fontFamily: 'Cairo',
+                      fontSize: ResponsiveUtils.adaptiveFontSize(
                         context,
-                        mobile: 24.0,
-                        tablet: 28.0,
-                        desktop: 32.0,
+                        mobile: 22,
+                        tablet: 26,
+                        desktop: 28,
+                      ),
+                      fontWeight: FontWeight.bold,
+                      color: isDark
+                          ? AppColors.luxuryGold.withOpacity(0.95)
+                          : AppColors.deepBlue,
+                      height: 1.3,
+                      letterSpacing: ResponsiveUtils.responsive(
+                        context,
+                        mobile: 1.0,
+                        tablet: 1.5,
+                        desktop: 2.0,
                       ),
                     ),
-                  ],
+                    textAlign: TextAlign.center,
+                    textDirection: TextDirection.rtl,
+                  ),
                 ),
               ),
             ),
@@ -1294,12 +1395,8 @@ class _SurahDetailScreenState extends ConsumerState<SurahDetailScreen>
             ),
           ),
 
-        // Fixed Audio Player en bas - Responsive
-        _buildFixedBottomAudioPlayer(
-          isDark,
-          audioUrlsAsync,
-          surahDetail.numberOfAyahs,
-        ),
+        // Mini lecteur audio en bas (même widget que l'accueil)
+        _buildBottomMiniAudioPlayer(),
 
         // Bouton Scroll to Top amélioré - Responsive
         // Ajuster la position selon la barre audio fixe
@@ -1450,6 +1547,113 @@ class _SurahDetailScreenState extends ConsumerState<SurahDetailScreen>
     );
   }
 
+  /// Affiche la traduction du verset dans une bottom sheet (au tap).
+  void _showTranslationForAyah(
+    BuildContext context, {
+    required int ayahNumber,
+    required String translation,
+    required bool isDark,
+  }) {
+    showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (ctx) => Container(
+        constraints: BoxConstraints(
+          maxHeight: MediaQuery.of(ctx).size.height * 0.5,
+        ),
+        decoration: BoxDecoration(
+          color: isDark ? AppColors.darkCard : AppColors.ivory,
+          borderRadius: const BorderRadius.vertical(top: Radius.circular(16)),
+          border: Border.all(
+            color: AppColors.luxuryGold.withOpacity(0.4),
+            width: 1,
+          ),
+          boxShadow: [
+            BoxShadow(
+              color: Colors.black26,
+              blurRadius: 12,
+              offset: const Offset(0, -4),
+            ),
+          ],
+        ),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Padding(
+              padding: EdgeInsets.symmetric(
+                horizontal: ResponsiveUtils.adaptivePadding(context, mobile: 16),
+                vertical: 12,
+              ),
+              child: Row(
+                children: [
+                  Icon(
+                    Icons.translate,
+                    color: AppColors.luxuryGold,
+                    size: 22,
+                  ),
+                  SizedBox(
+                    width: ResponsiveUtils.adaptivePadding(context, mobile: 8),
+                  ),
+                  Text(
+                    'Verset $ayahNumber',
+                    style: TextStyle(
+                      fontWeight: FontWeight.w700,
+                      fontSize: ResponsiveUtils.adaptiveFontSize(
+                        context,
+                        mobile: 16,
+                        tablet: 17,
+                        desktop: 18,
+                      ),
+                      color: isDark
+                          ? AppColors.pureWhite
+                          : AppColors.textPrimary,
+                    ),
+                  ),
+                  const Spacer(),
+                  IconButton(
+                    icon: const Icon(Icons.close),
+                    onPressed: () => Navigator.of(ctx).pop(),
+                    color: isDark
+                        ? AppColors.pureWhite
+                        : AppColors.textPrimary,
+                  ),
+                ],
+              ),
+            ),
+            Divider(
+              height: 1,
+              color: AppColors.luxuryGold.withOpacity(0.3),
+            ),
+            Flexible(
+              child: SingleChildScrollView(
+                padding: EdgeInsets.all(
+                  ResponsiveUtils.adaptivePadding(context, mobile: 16),
+                ),
+                child: Text(
+                  translation,
+                  style: TextStyle(
+                    fontSize: ResponsiveUtils.adaptiveFontSize(
+                      context,
+                      mobile: 14,
+                      tablet: 15,
+                      desktop: 16,
+                    ),
+                    height: 1.5,
+                    color: isDark
+                        ? AppColors.pureWhite
+                        : AppColors.textPrimary,
+                  ),
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
   Widget _buildContinuousAyahsText(SurahDetailModel surahDetail, bool isDark) {
     // Bismillah pour toutes les sourates sauf At-Tawbah
     final bismillah = widget.surah.number != 9
@@ -1509,12 +1713,8 @@ class _SurahDetailScreenState extends ConsumerState<SurahDetailScreen>
             child: Consumer(
               builder: (context, ref, child) {
                 final baseFontSize = ref.watch(arabicFontSizeProvider);
-                final bismillahFontSize = ResponsiveUtils.adaptiveFontSize(
-                  context,
-                  mobile: baseFontSize * 1.07,
-                  tablet: baseFontSize * 1.29,
-                  desktop: baseFontSize * 1.5,
-                );
+                final bismillahFontSize =
+                    ResponsiveUtils.quranFontSize(context, baseFontSize * 1.07);
                 return Text(
                   bismillah,
                   style: TextStyle(
@@ -1538,13 +1738,50 @@ class _SurahDetailScreenState extends ConsumerState<SurahDetailScreen>
           ),
         ],
 
-        // Texte continu avec ayahs intégrés
-        Container(
+        // Texte par ayah : tap sur un verset → afficher la traduction (bottom sheet)
+        Padding(
           padding: const EdgeInsets.symmetric(vertical: 8),
-          child: Text.rich(
-            TextSpan(children: _buildAyahSpans(surahDetail, isDark)),
-            textDirection: TextDirection.rtl,
-            textAlign: TextAlign.justify,
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              for (int i = 0; i < surahDetail.ayahs.length; i++) ...[
+                MouseRegion(
+                  cursor: SystemMouseCursors.help,
+                  child: GestureDetector(
+                    onTap: () => _showTranslationForAyah(
+                      context,
+                      ayahNumber: i + 1,
+                      translation: surahDetail.ayahs[i].translation ??
+                          'Traduction non disponible.',
+                      isDark: isDark,
+                    ),
+                    child: Padding(
+                      padding: EdgeInsets.only(
+                        bottom: i < surahDetail.ayahs.length - 1
+                            ? ResponsiveUtils.adaptivePadding(
+                                context,
+                                mobile: 6,
+                                tablet: 8,
+                                desktop: 10,
+                              )
+                            : 0,
+                      ),
+                      child: Text.rich(
+                        TextSpan(
+                          children: _buildSpansForSingleAyah(
+                            surahDetail,
+                            i,
+                            isDark,
+                          ),
+                        ),
+                        textDirection: TextDirection.rtl,
+                        textAlign: TextAlign.justify,
+                      ),
+                    ),
+                  ),
+                ),
+              ],
+            ],
           ),
         ),
 
@@ -1813,7 +2050,7 @@ class _SurahDetailScreenState extends ConsumerState<SurahDetailScreen>
                       ],
                     ),
                   );
-                }).toList(),
+                }),
               ],
             ),
           ),
@@ -1824,19 +2061,24 @@ class _SurahDetailScreenState extends ConsumerState<SurahDetailScreen>
 
   List<InlineSpan> _buildAyahSpans(SurahDetailModel surahDetail, bool isDark) {
     final List<InlineSpan> spans = [];
+    for (int i = 0; i < surahDetail.ayahs.length; i++) {
+      spans.addAll(_buildSpansForSingleAyah(surahDetail, i, isDark));
+      if (i < surahDetail.ayahs.length - 1) {
+        spans.add(const TextSpan(text: '  '));
+      }
+    }
+    return spans;
+  }
+
+  void _buildAyahSpansLegacy(SurahDetailModel surahDetail, bool isDark) {
     final currentPlayingSurah = ref.read(currentPlayingSurahProvider);
     final isAudioPlaying = ref.read(isAudioPlayingProvider);
     final isThisSurahPlaying = currentPlayingSurah == widget.surah.number;
-    // Utiliser la taille de police dynamique depuis les paramètres
     final baseFontSize = ref.read(arabicFontSizeProvider);
-    final fontSize = ResponsiveUtils.adaptiveFontSize(
-      context,
-      mobile: baseFontSize,
-      tablet: baseFontSize * 1.2,
-      desktop: baseFontSize * 1.4,
-    );
-    // Vérifier si le highlight des ayahs est activé
-    final highlightAyah = ref.read(highlightAyahProvider);
+    final fontSize =
+        ResponsiveUtils.quranFontSize(context, baseFontSize);
+    final pauseMarksTanzil = ref.read(pauseMarksTanzilProvider);
+    final List<InlineSpan> spans = [];
 
     for (int i = 0; i < surahDetail.ayahs.length; i++) {
       final ayah = surahDetail.ayahs[i];
@@ -1844,50 +2086,63 @@ class _SurahDetailScreenState extends ConsumerState<SurahDetailScreen>
       final isPlaying =
           isThisSurahPlaying && _currentAyahIndex == i && isAudioPlaying;
       final isActive = isHighlighted || isPlaying;
-      // Si highlight ayah est activé, tous les ayahs sont mis en surbrillance
-      final shouldHighlight = highlightAyah || isActive;
+      // Mise en avant uniquement de l’ayah en lecture ou tapée (plus de « highlight » global)
+      final shouldHighlight = isActive;
 
-      // Texte arabe de l'ayah - Responsive avec animation améliorée
-      spans.add(
-        TextSpan(
-          text: '${ayah.text} ',
-          style: TextStyle(
-            fontFamily: 'Cairo',
-            fontSize: fontSize,
-            height: ResponsiveUtils.responsive(
-              context,
-              mobile: 2.0,
-              tablet: 2.2,
-              desktop: 2.4,
-            ),
-            fontWeight: shouldHighlight ? FontWeight.w700 : FontWeight.w600,
-            color: shouldHighlight
-                ? AppColors.luxuryGold
-                : (isDark ? AppColors.pureWhite : AppColors.textPrimary),
-            backgroundColor: isPlaying
-                ? AppColors.luxuryGold.withOpacity(0.2)
-                : isHighlighted
-                ? AppColors.luxuryGold.withOpacity(0.25)
-                : highlightAyah
-                ? AppColors.luxuryGold.withOpacity(0.15)
-                : null,
-            shadows: shouldHighlight
-                ? [
-                    Shadow(
-                      color: AppColors.luxuryGold.withOpacity(0.6),
-                      blurRadius: isPlaying ? 12 : 8,
-                      offset: const Offset(0, 0),
-                    ),
-                    Shadow(
-                      color: AppColors.luxuryGold.withOpacity(0.3),
-                      blurRadius: isPlaying ? 20 : 12,
-                      offset: const Offset(0, 0),
-                    ),
-                  ]
-                : null,
-          ),
+      // Texte arabe avec pause marks Tanzil (style web : marques en petit, couleur distincte)
+      final baseStyle = TextStyle(
+        fontFamily: 'Cairo',
+        fontSize: fontSize,
+        height: ResponsiveUtils.responsive(
+          context,
+          mobile: 2.0,
+          tablet: 2.2,
+          desktop: 2.4,
         ),
+        fontWeight: shouldHighlight ? FontWeight.w700 : FontWeight.w600,
+        color: shouldHighlight
+            ? AppColors.luxuryGold
+            : (isDark ? AppColors.pureWhite : AppColors.textPrimary),
+        backgroundColor: isPlaying
+            ? AppColors.luxuryGold.withOpacity(0.2)
+            : isHighlighted
+            ? AppColors.luxuryGold.withOpacity(0.25)
+            : null,
+        shadows: shouldHighlight
+            ? [
+                Shadow(
+                  color: AppColors.luxuryGold.withOpacity(0.6),
+                  blurRadius: isPlaying ? 12 : 8,
+                  offset: const Offset(0, 0),
+                ),
+                Shadow(
+                  color: AppColors.luxuryGold.withOpacity(0.3),
+                  blurRadius: isPlaying ? 20 : 12,
+                  offset: const Offset(0, 0),
+                ),
+              ]
+            : null,
       );
+      // Style Tanzil pour les marques de waqf : petit, exposant, couleur or
+      final pauseMarkStyle = pauseMarksTanzil
+          ? baseStyle.copyWith(
+              fontSize: fontSize * 0.52,
+              height: 1.0,
+              color: AppColors.luxuryGold.withOpacity(isDark ? 0.92 : 0.88),
+              fontWeight: FontWeight.w500,
+            )
+          : baseStyle.copyWith(fontSize: fontSize * 0.7, height: 1.2);
+      final segments = splitByPauseMarks(ayah.text);
+      for (final segment in segments) {
+        final isPause = segmentIsPauseMark(segment);
+        spans.add(
+          TextSpan(
+            text: segment,
+            style: isPause ? pauseMarkStyle : baseStyle,
+          ),
+        );
+      }
+      spans.add(TextSpan(text: ' ', style: baseStyle));
 
       // Badge avec numéro d'ayah intégré amélioré - Responsive avec animation
       spans.add(
@@ -1906,8 +2161,93 @@ class _SurahDetailScreenState extends ConsumerState<SurahDetailScreen>
         spans.add(const TextSpan(text: '  '));
       }
     }
+  }
 
-    return spans;
+  /// Spans pour un seul ayah (texte + pause marks + badge). Utilisé pour le tooltip « translate on mouse over ».
+  List<InlineSpan> _buildSpansForSingleAyah(
+    SurahDetailModel surahDetail,
+    int ayahIndex,
+    bool isDark,
+  ) {
+    final ayah = surahDetail.ayahs[ayahIndex];
+    final currentPlayingSurah = ref.read(currentPlayingSurahProvider);
+    final isAudioPlaying = ref.read(isAudioPlayingProvider);
+    final isThisSurahPlaying = currentPlayingSurah == widget.surah.number;
+    final baseFontSize = ref.read(arabicFontSizeProvider);
+    final fontSize =
+        ResponsiveUtils.quranFontSize(context, baseFontSize);
+    final pauseMarksTanzil = ref.read(pauseMarksTanzilProvider);
+    final isHighlighted = _highlightedAyahIndex == ayahIndex;
+    final isPlaying =
+        isThisSurahPlaying && _currentAyahIndex == ayahIndex && isAudioPlaying;
+    final isActive = isHighlighted || isPlaying;
+    final shouldHighlight = isActive;
+
+    final baseStyle = TextStyle(
+      fontFamily: 'Cairo',
+      fontSize: fontSize,
+      height: ResponsiveUtils.responsive(
+        context,
+        mobile: 2.0,
+        tablet: 2.2,
+        desktop: 2.4,
+      ),
+      fontWeight: shouldHighlight ? FontWeight.w700 : FontWeight.w600,
+      color: shouldHighlight
+          ? AppColors.luxuryGold
+          : (isDark ? AppColors.pureWhite : AppColors.textPrimary),
+      backgroundColor: isPlaying
+          ? AppColors.luxuryGold.withOpacity(0.2)
+          : isHighlighted
+              ? AppColors.luxuryGold.withOpacity(0.25)
+              : null,
+      shadows: shouldHighlight
+          ? [
+              Shadow(
+                color: AppColors.luxuryGold.withOpacity(0.6),
+                blurRadius: isPlaying ? 12 : 8,
+                offset: const Offset(0, 0),
+              ),
+              Shadow(
+                color: AppColors.luxuryGold.withOpacity(0.3),
+                blurRadius: isPlaying ? 20 : 12,
+                offset: const Offset(0, 0),
+              ),
+            ]
+          : null,
+    );
+    final pauseMarkStyle = pauseMarksTanzil
+        ? baseStyle.copyWith(
+            fontSize: fontSize * 0.52,
+            height: 1.0,
+            color: AppColors.luxuryGold.withOpacity(isDark ? 0.92 : 0.88),
+            fontWeight: FontWeight.w500,
+          )
+        : baseStyle.copyWith(fontSize: fontSize * 0.7, height: 1.2);
+
+    final List<InlineSpan> out = [];
+    final segments = splitByPauseMarks(ayah.text);
+    for (final segment in segments) {
+      final isPause = segmentIsPauseMark(segment);
+      out.add(
+        TextSpan(
+          text: segment,
+          style: isPause ? pauseMarkStyle : baseStyle,
+        ),
+      );
+    }
+    out.add(TextSpan(text: ' ', style: baseStyle));
+    out.add(
+      WidgetSpan(
+        alignment: PlaceholderAlignment.middle,
+        child: _buildAyahBadge(
+          ayahNumber: ayah.numberInSurah,
+          isHighlighted: isHighlighted,
+          isPlaying: isPlaying,
+        ),
+      ),
+    );
+    return out;
   }
 
   /// Widget pour badge d'ayah avec animation
@@ -2126,866 +2466,265 @@ class _SurahDetailScreenState extends ConsumerState<SurahDetailScreen>
     );
   }
 
-  /// Fixed Bottom Audio Player avec contrôles pour jouer et changer de sourate
-  Widget _buildFixedBottomAudioPlayer(
-    bool isDark,
-    AsyncValue<List<String>> audioUrlsAsync,
-    int totalAyahs,
-  ) {
-    final currentSurah = ref.watch(currentPlayingSurahProvider);
-    final isAudioPlaying = ref.watch(isAudioPlayingProvider);
-    final currentAyahIndex = ref.watch(currentAyahIndexProvider);
-    final isThisSurahPlaying = currentSurah == widget.surah.number;
-    final surahsAsync = ref.watch(surahsProvider);
+  /// Démarre la lecture de la sourate affichée (utilisé par le mini player)
+  Future<void> _playCurrentSurah() async {
+    try {
+      final audioUrlsAsync = ref.read(
+        surahAudioUrlsProvider(widget.surah.number),
+      );
+      final audioUrls = audioUrlsAsync.when(
+        data: (urls) => urls,
+        loading: () => <String>[],
+        error: (_, __) => <String>[],
+      );
+      if (audioUrls.isEmpty) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text(
+                audioUrlsAsync.isLoading
+                    ? 'Chargement des pistes audio…'
+                    : 'Aucune piste audio disponible. Réessayez.',
+              ),
+              duration: const Duration(seconds: 2),
+            ),
+          );
+        }
+        return;
+      }
+      await _loadAndPlaySurah(audioUrls);
+    } catch (e) {
+      debugPrint('Error starting surah playback: $e');
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Erreur: $e'),
+            backgroundColor: AppColors.error,
+            duration: const Duration(seconds: 2),
+          ),
+        );
+      }
+    }
+  }
 
-    // Calculer la hauteur de la barre pour l'animation
-    final barHeight = ResponsiveUtils.responsive(
-      context,
-      mobile: 120.0,
-      tablet: 140.0,
-      desktop: 160.0,
-    );
+  Future<void> _loadAndPlaySurah(List<String> audioUrls) async {
+    final playlistService = ref.read(globalAudioPlaylistServiceProvider);
+    ref.read(currentPlayingSurahProvider.notifier).state = widget.surah.number;
+    ref.read(currentPlayingSurahNameProvider.notifier).state = widget.surah.name;
+    ref.read(currentSurahTotalAyahsProvider.notifier).state =
+        widget.surah.numberOfAyahs;
+    await playlistService.loadSurahPlaylist(audioUrls);
+    if (mounted) await playlistService.play();
+  }
 
+  /// Mini lecteur audio en bas (play/pause, next/previous ayah)
+  Widget _buildBottomMiniAudioPlayer() {
+    const barHeight = 80.0;
     return AnimatedPositioned(
       duration: const Duration(milliseconds: 300),
       curve: Curves.easeInOut,
       bottom: _showBottomBar ? 0 : -barHeight,
       left: 0,
       right: 0,
-      child: audioUrlsAsync.when(
-        data: (audioUrls) {
-          return surahsAsync.when(
-            data: (surahs) {
-              // Trouver la sourate suivante
-              final currentIndex = surahs.indexWhere(
-                (s) => s.number == widget.surah.number,
-              );
-              final hasNext = currentIndex < surahs.length - 1;
-              final nextSurah = hasNext
-                  ? SurahAdapter.fromApiModel(surahs[currentIndex + 1])
-                  : null;
-
-              return _buildFixedPlayerBar(
-                isDark,
-                isThisSurahPlaying,
-                isAudioPlaying,
-                currentAyahIndex,
-                totalAyahs,
-                audioUrls,
-                audioUrlsAsync,
-                nextSurah,
-              );
-            },
-            loading: () => _buildFixedPlayerBar(
-              isDark,
-              isThisSurahPlaying,
-              isAudioPlaying,
-              currentAyahIndex,
-              totalAyahs,
-              audioUrls,
-              audioUrlsAsync,
-              null,
-            ),
-            error: (_, __) => _buildFixedPlayerBar(
-              isDark,
-              isThisSurahPlaying,
-              isAudioPlaying,
-              currentAyahIndex,
-              totalAyahs,
-              audioUrls,
-              audioUrlsAsync,
-              null,
-            ),
-          );
-        },
-        loading: () => const SizedBox.shrink(),
-        error: (_, __) => const SizedBox.shrink(),
+      child: MiniAudioPlayer(
+        onTap: () {},
+        currentSurahNumber: widget.surah.number,
+        currentSurahName: widget.surah.name,
+        currentSurahTotalAyahs: widget.surah.numberOfAyahs,
+        onPlayCurrentSurah: _playCurrentSurah,
       ),
     );
   }
 
-  /// Barre audio fixe en bas avec contrôles simplifiés
-  Widget _buildFixedPlayerBar(
-    bool isDark,
-    bool isThisSurahPlaying,
-    bool isAudioPlaying,
-    int? currentAyahIndex,
-    int totalAyahs,
-    List<String> audioUrls,
-    AsyncValue<List<String>> audioUrlsAsync,
-    Surah? nextSurah,
-  ) {
-    final currentAyah = currentAyahIndex != null && currentAyahIndex > 0
-        ? (widget.surah.number == 9 ? currentAyahIndex : currentAyahIndex - 1)
-        : 0;
 
-    // Calculer le pourcentage de progression
-    final progress = totalAyahs > 0
-        ? (currentAyah / totalAyahs).clamp(0.0, 1.0)
-        : 0.0;
+  /// Afficher le panneau de paramètres (ouvre depuis la droite)
+  void _showSettingsPanel(bool isDark) {
+    HapticFeedback.lightImpact();
+    showGeneralDialog(
+      context: context,
+      barrierDismissible: true,
+      barrierColor: Colors.black54,
+      barrierLabel: 'Paramètres',
+      transitionDuration: const Duration(milliseconds: 300),
+      transitionBuilder: (context, animation, secondaryAnimation, child) {
+        return SlideTransition(
+          position: Tween<Offset>(
+            begin: const Offset(1, 0),
+            end: Offset.zero,
+          ).animate(CurvedAnimation(
+            parent: animation,
+            curve: Curves.easeOutCubic,
+          )),
+          child: child,
+        );
+      },
+      pageBuilder: (context, animation, secondaryAnimation) {
+        return Align(
+          alignment: Alignment.centerRight,
+          child: Material(
+            color: Colors.transparent,
+            child: _SettingsPanelContent(
+              isDark: isDark,
+              surahNumber: widget.surah.number,
+              showScriptSelector: (ctx, dark, r) =>
+                  _showScriptSelector(ctx, dark, r),
+              showReciterSelector: (ctx, dark, r) =>
+                  _showReciterSelector(ctx, dark, r),
+              showTranslationSelector: (ctx, dark, r) =>
+                  _showTranslationSelector(ctx, dark, r),
+              showRepetitionSelector: (ctx, dark, r) =>
+                  _showRepetitionSelector(ctx, dark, r),
+              showPauseMarksLegend: (ctx, r) => _showPauseMarksLegend(ctx, r),
+              downloadSurahAudio: (dark) => _downloadSurahAudio(dark),
+              isAutoScrollEnabled: _isAutoScrollEnabled,
+              showTranslation: _showTranslation,
+              onAutoScrollChanged: (value) {
+                setState(() {
+                  _isAutoScrollEnabled = value;
+                  _shouldAutoScroll = value;
+                });
+                final isAudioPlaying = ref.read(isAudioPlayingProvider);
+                final currentSurah = ref.read(currentPlayingSurahProvider);
+                final isThisSurahPlaying = currentSurah == widget.surah.number;
 
-    return Container(
-      decoration: BoxDecoration(
-        gradient: LinearGradient(
-          colors: isThisSurahPlaying && isAudioPlaying
-              ? [AppColors.luxuryGold, AppColors.luxuryGold.withOpacity(0.9)]
-              : [AppColors.deepBlue, AppColors.deepBlue.withOpacity(0.9)],
-          begin: Alignment.topLeft,
-          end: Alignment.bottomRight,
+                if (_isAutoScrollEnabled &&
+                    isAudioPlaying &&
+                    isThisSurahPlaying) {
+                  _startContinuousScroll();
+                } else {
+                  _stopContinuousScroll();
+                }
+              },
+              onTranslationChanged: (value) {
+                setState(() {
+                  _showTranslation = value;
+                });
+              },
+            ),
+          ),
+        );
+      },
+    );
+  }
+
+  /// Légende des marques de waqf (Tanzil) — م، لا، ج، etc.
+  void _showPauseMarksLegend(BuildContext context, WidgetRef ref) {
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: Colors.transparent,
+      builder: (context) => Container(
+        padding: EdgeInsets.all(
+          ResponsiveUtils.adaptivePadding(context, mobile: 20.0),
         ),
-        boxShadow: [
-          BoxShadow(
-            color:
-                (isThisSurahPlaying && isAudioPlaying
-                        ? AppColors.luxuryGold
-                        : AppColors.deepBlue)
-                    .withOpacity(0.4),
-            blurRadius: 20,
-            spreadRadius: 2,
-            offset: const Offset(0, -4),
+        decoration: BoxDecoration(
+          color: isDark ? AppColors.darkSurface : AppColors.pureWhite,
+          borderRadius: const BorderRadius.vertical(top: Radius.circular(20)),
+        ),
+        child: SafeArea(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Center(
+                child: Container(
+                  width: 40,
+                  height: 4,
+                  decoration: BoxDecoration(
+                    color: AppColors.luxuryGold.withOpacity(0.5),
+                    borderRadius: BorderRadius.circular(2),
+                  ),
+                ),
+              ),
+              SizedBox(
+                height: ResponsiveUtils.adaptivePadding(context, mobile: 16.0),
+              ),
+              Text(
+                'Marques de waqf (Tanzil)',
+                style: TextStyle(
+                  color: isDark ? AppColors.pureWhite : AppColors.textPrimary,
+                  fontSize: ResponsiveUtils.adaptiveFontSize(
+                    context,
+                    mobile: 18,
+                    tablet: 20,
+                    desktop: 22,
+                  ),
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
+              const SizedBox(height: 8),
+              Text(
+                'Signes du Mushaf de Médine pour guider la récitation.',
+                style: TextStyle(
+                  color: isDark
+                      ? AppColors.pureWhite.withOpacity(0.8)
+                      : AppColors.textSecondary,
+                  fontSize: ResponsiveUtils.adaptiveFontSize(
+                    context,
+                    mobile: 14,
+                    tablet: 15,
+                    desktop: 16,
+                  ),
+                ),
+              ),
+              const SizedBox(height: 16),
+              _legendRow(context, isDark, 'م', 'Pause obligatoire'),
+              _legendRow(context, isDark, 'لا', 'Ne pas s’arrêter'),
+              _legendRow(context, isDark, 'ج', 'Pause ou continuer (équivalent)'),
+              _legendRow(context, isDark, 'قلی', 'Mieux s’arrêter'),
+              _legendRow(context, isDark, 'صلی', 'Mieux continuer'),
+              _legendRow(context, isDark, '∴ ∴', 'Pause à l’un ou l’autre, pas aux deux'),
+              const SizedBox(height: 16),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _legendRow(BuildContext ctx, bool isDark, String mark, String meaning) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 6.0),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Container(
+            width: 44,
+            alignment: Alignment.center,
+            child: Text(
+              mark,
+              style: TextStyle(
+                fontFamily: 'Cairo',
+                fontSize: ResponsiveUtils.adaptiveFontSize(
+                  ctx,
+                  mobile: 20,
+                  tablet: 22,
+                  desktop: 24,
+                ),
+                color: AppColors.luxuryGold,
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Text(
+              meaning,
+              style: TextStyle(
+                color: isDark
+                    ? AppColors.pureWhite.withOpacity(0.9)
+                    : AppColors.textPrimary,
+                fontSize: ResponsiveUtils.adaptiveFontSize(
+                  ctx,
+                  mobile: 14,
+                  tablet: 15,
+                  desktop: 16,
+                ),
+              ),
+            ),
           ),
         ],
       ),
-      child: SafeArea(
-        top: false,
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            // Barre de progression en haut
-            Container(
-              height: 3,
-              child: Stack(
-                children: [
-                  // Fond de la barre
-                  Container(color: AppColors.pureWhite.withOpacity(0.2)),
-                  // Barre de progression animée
-                  AnimatedContainer(
-                    duration: const Duration(milliseconds: 300),
-                    curve: Curves.easeOutCubic,
-                    width: MediaQuery.of(context).size.width * progress,
-                    decoration: BoxDecoration(
-                      gradient: LinearGradient(
-                        colors: [
-                          AppColors.pureWhite,
-                          AppColors.pureWhite.withOpacity(0.8),
-                        ],
-                      ),
-                      boxShadow: [
-                        BoxShadow(
-                          color: AppColors.pureWhite.withOpacity(0.5),
-                          blurRadius: 4,
-                          spreadRadius: 1,
-                        ),
-                      ],
-                    ),
-                  ),
-                ],
-              ),
-            ),
-            // Contenu principal - Redesigned with better UX
-            Padding(
-              padding: EdgeInsets.symmetric(
-                horizontal: ResponsiveUtils.adaptivePadding(
-                  context,
-                  mobile: 16.0,
-                  tablet: 20.0,
-                  desktop: 24.0,
-                ),
-                vertical: ResponsiveUtils.adaptivePadding(
-                  context,
-                  mobile: 12.0,
-                  tablet: 14.0,
-                  desktop: 16.0,
-                ),
-              ),
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  // Main controls row
-                  Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                    crossAxisAlignment: CrossAxisAlignment.center,
-                    children: [
-                      // Previous surah button
-                      Builder(
-                        builder: (context) {
-                          final surahsAsync = ref.watch(surahsProvider);
-                          return surahsAsync.when(
-                            data: (surahs) {
-                              final currentIndex = surahs.indexWhere(
-                                (s) => s.number == widget.surah.number,
-                              );
-                              final hasPrevious = currentIndex > 0;
-                              final previousSurah = hasPrevious
-                                  ? SurahAdapter.fromApiModel(
-                                      surahs[currentIndex - 1],
-                                    )
-                                  : null;
-
-                              if (previousSurah == null) {
-                                return SizedBox(
-                                  width: ResponsiveUtils.responsive(
-                                    context,
-                                    mobile: 48.0,
-                                    tablet: 52.0,
-                                    desktop: 56.0,
-                                  ),
-                                );
-                              }
-
-                              return Material(
-                                color: Colors.transparent,
-                                child: InkWell(
-                                  onTap: () async {
-                                    HapticFeedback.mediumImpact();
-                                    final wasPlaying =
-                                        isThisSurahPlaying && isAudioPlaying;
-                                    Navigator.pushReplacement(
-                                      context,
-                                      PageRouteBuilder(
-                                        pageBuilder:
-                                            (
-                                              context,
-                                              animation,
-                                              secondaryAnimation,
-                                            ) => SurahDetailScreen(
-                                              surah: previousSurah,
-                                              autoPlay: wasPlaying,
-                                            ),
-                                        transitionsBuilder:
-                                            (
-                                              context,
-                                              animation,
-                                              secondaryAnimation,
-                                              child,
-                                            ) {
-                                              const begin = Offset(-1.0, 0.0);
-                                              const end = Offset.zero;
-                                              const curve = Curves.easeInOut;
-                                              var tween = Tween(
-                                                begin: begin,
-                                                end: end,
-                                              ).chain(CurveTween(curve: curve));
-                                              return SlideTransition(
-                                                position: animation.drive(
-                                                  tween,
-                                                ),
-                                                child: FadeTransition(
-                                                  opacity: animation,
-                                                  child: child,
-                                                ),
-                                              );
-                                            },
-                                        transitionDuration: const Duration(
-                                          milliseconds: 300,
-                                        ),
-                                      ),
-                                    );
-                                  },
-                                  borderRadius: BorderRadius.circular(
-                                    ResponsiveUtils.adaptiveBorderRadius(
-                                      context,
-                                      base: 12.0,
-                                    ),
-                                  ),
-                                  child: Container(
-                                    width: ResponsiveUtils.responsive(
-                                      context,
-                                      mobile: 48.0,
-                                      tablet: 52.0,
-                                      desktop: 56.0,
-                                    ),
-                                    height: ResponsiveUtils.responsive(
-                                      context,
-                                      mobile: 48.0,
-                                      tablet: 52.0,
-                                      desktop: 56.0,
-                                    ),
-                                    decoration: BoxDecoration(
-                                      color: AppColors.pureWhite.withOpacity(
-                                        0.2,
-                                      ),
-                                      borderRadius: BorderRadius.circular(
-                                        ResponsiveUtils.adaptiveBorderRadius(
-                                          context,
-                                          base: 12.0,
-                                        ),
-                                      ),
-                                    ),
-                                    child: Icon(
-                                      Icons.skip_previous_rounded,
-                                      color: AppColors.pureWhite,
-                                      size: ResponsiveUtils.adaptiveIconSize(
-                                        context,
-                                        base: 24.0,
-                                      ),
-                                    ),
-                                  ),
-                                ),
-                              );
-                            },
-                            loading: () => SizedBox(
-                              width: ResponsiveUtils.responsive(
-                                context,
-                                mobile: 48.0,
-                                tablet: 52.0,
-                                desktop: 56.0,
-                              ),
-                            ),
-                            error: (_, __) => SizedBox(
-                              width: ResponsiveUtils.responsive(
-                                context,
-                                mobile: 48.0,
-                                tablet: 52.0,
-                                desktop: 56.0,
-                              ),
-                            ),
-                          );
-                        },
-                      ),
-
-                      // Center: Play/Pause button with current info
-                      Expanded(
-                        child: Column(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            // Play/Pause button - More prominent
-                            Material(
-                              color: Colors.transparent,
-                              child: InkWell(
-                                onTap: () async {
-                                  HapticFeedback.mediumImpact();
-                                  final playlistService = ref.read(
-                                    globalAudioPlaylistServiceProvider,
-                                  );
-
-                                  if (!isThisSurahPlaying) {
-                                    try {
-                                      await playlistService.loadSurahPlaylist(
-                                        audioUrls,
-                                      );
-                                      ref
-                                              .read(
-                                                currentPlayingSurahProvider
-                                                    .notifier,
-                                              )
-                                              .state =
-                                          widget.surah.number;
-                                      ref
-                                              .read(
-                                                currentPlayingSurahNameProvider
-                                                    .notifier,
-                                              )
-                                              .state =
-                                          widget.surah.name;
-                                      ref
-                                              .read(
-                                                currentSurahTotalAyahsProvider
-                                                    .notifier,
-                                              )
-                                              .state =
-                                          totalAyahs;
-                                      await playlistService.play();
-                                    } catch (e) {
-                                      debugPrint('Error starting playback: $e');
-                                      if (mounted) {
-                                        ScaffoldMessenger.of(
-                                          context,
-                                        ).showSnackBar(
-                                          SnackBar(
-                                            content: Text(
-                                              'Erreur de démarrage: $e',
-                                            ),
-                                            backgroundColor: AppColors.error,
-                                          ),
-                                        );
-                                      }
-                                    }
-                                  } else {
-                                    if (isAudioPlaying) {
-                                      playlistService.pause();
-                                    } else {
-                                      playlistService.play();
-                                    }
-                                  }
-                                },
-                                borderRadius: BorderRadius.circular(50),
-                                child: AnimatedContainer(
-                                  duration: const Duration(milliseconds: 200),
-                                  curve: Curves.easeInOut,
-                                  width: ResponsiveUtils.responsive(
-                                    context,
-                                    mobile: 56.0,
-                                    tablet: 60.0,
-                                    desktop: 64.0,
-                                  ),
-                                  height: ResponsiveUtils.responsive(
-                                    context,
-                                    mobile: 56.0,
-                                    tablet: 60.0,
-                                    desktop: 64.0,
-                                  ),
-                                  decoration: BoxDecoration(
-                                    color: AppColors.pureWhite.withOpacity(
-                                      isThisSurahPlaying && isAudioPlaying
-                                          ? 0.4
-                                          : 0.3,
-                                    ),
-                                    shape: BoxShape.circle,
-                                    boxShadow: [
-                                      BoxShadow(
-                                        color: AppColors.pureWhite.withOpacity(
-                                          0.5,
-                                        ),
-                                        blurRadius:
-                                            isThisSurahPlaying && isAudioPlaying
-                                            ? 20
-                                            : 12,
-                                        spreadRadius:
-                                            isThisSurahPlaying && isAudioPlaying
-                                            ? 3
-                                            : 2,
-                                        offset: const Offset(0, 3),
-                                      ),
-                                    ],
-                                  ),
-                                  child: AnimatedSwitcher(
-                                    duration: const Duration(milliseconds: 200),
-                                    child: Icon(
-                                      isThisSurahPlaying && isAudioPlaying
-                                          ? Icons.pause_rounded
-                                          : Icons.play_arrow_rounded,
-                                      key: ValueKey(
-                                        '${isThisSurahPlaying}_$isAudioPlaying',
-                                      ),
-                                      color: AppColors.pureWhite,
-                                      size: ResponsiveUtils.adaptiveIconSize(
-                                        context,
-                                        base: 28.0,
-                                      ),
-                                    ),
-                                  ),
-                                ),
-                              ),
-                            ),
-                            SizedBox(
-                              height: ResponsiveUtils.adaptivePadding(
-                                context,
-                                mobile: 6.0,
-                              ),
-                            ),
-                            // Current ayah info
-                            if (currentAyahIndex != null &&
-                                currentAyahIndex > 0)
-                              Text(
-                                'Ayah ${widget.surah.number == 9 ? currentAyahIndex : currentAyahIndex - 1} of $totalAyahs',
-                                style: TextStyle(
-                                  color: AppColors.pureWhite.withOpacity(0.9),
-                                  fontSize: ResponsiveUtils.adaptiveFontSize(
-                                    context,
-                                    mobile: 12,
-                                    tablet: 13,
-                                    desktop: 14,
-                                  ),
-                                  fontWeight: FontWeight.w500,
-                                ),
-                              )
-                            else
-                              Text(
-                                'Surah ${widget.surah.number}',
-                                style: TextStyle(
-                                  color: AppColors.pureWhite.withOpacity(0.9),
-                                  fontSize: ResponsiveUtils.adaptiveFontSize(
-                                    context,
-                                    mobile: 12,
-                                    tablet: 13,
-                                    desktop: 14,
-                                  ),
-                                  fontWeight: FontWeight.w500,
-                                ),
-                              ),
-                          ],
-                        ),
-                      ),
-
-                      // Next surah button
-                      if (nextSurah != null)
-                        Material(
-                          color: Colors.transparent,
-                          child: InkWell(
-                            onTap: () async {
-                              HapticFeedback.mediumImpact();
-                              final wasPlaying =
-                                  isThisSurahPlaying && isAudioPlaying;
-                              Navigator.pushReplacement(
-                                context,
-                                PageRouteBuilder(
-                                  pageBuilder:
-                                      (
-                                        context,
-                                        animation,
-                                        secondaryAnimation,
-                                      ) => SurahDetailScreen(
-                                        surah: nextSurah,
-                                        autoPlay: wasPlaying,
-                                      ),
-                                  transitionsBuilder:
-                                      (
-                                        context,
-                                        animation,
-                                        secondaryAnimation,
-                                        child,
-                                      ) {
-                                        const begin = Offset(1.0, 0.0);
-                                        const end = Offset.zero;
-                                        const curve = Curves.easeInOut;
-                                        var tween = Tween(
-                                          begin: begin,
-                                          end: end,
-                                        ).chain(CurveTween(curve: curve));
-                                        var offsetAnimation = animation.drive(
-                                          tween,
-                                        );
-                                        return SlideTransition(
-                                          position: offsetAnimation,
-                                          child: FadeTransition(
-                                            opacity: animation,
-                                            child: child,
-                                          ),
-                                        );
-                                      },
-                                  transitionDuration: const Duration(
-                                    milliseconds: 300,
-                                  ),
-                                ),
-                              );
-                            },
-                            borderRadius: BorderRadius.circular(
-                              ResponsiveUtils.adaptiveBorderRadius(
-                                context,
-                                base: 12.0,
-                              ),
-                            ),
-                            child: Container(
-                              width: ResponsiveUtils.responsive(
-                                context,
-                                mobile: 48.0,
-                                tablet: 52.0,
-                                desktop: 56.0,
-                              ),
-                              height: ResponsiveUtils.responsive(
-                                context,
-                                mobile: 48.0,
-                                tablet: 52.0,
-                                desktop: 56.0,
-                              ),
-                              decoration: BoxDecoration(
-                                color: AppColors.pureWhite.withOpacity(0.2),
-                                borderRadius: BorderRadius.circular(
-                                  ResponsiveUtils.adaptiveBorderRadius(
-                                    context,
-                                    base: 12.0,
-                                  ),
-                                ),
-                              ),
-                              child: Icon(
-                                Icons.skip_next_rounded,
-                                color: AppColors.pureWhite,
-                                size: ResponsiveUtils.adaptiveIconSize(
-                                  context,
-                                  base: 24.0,
-                                ),
-                              ),
-                            ),
-                          ),
-                        )
-                      else
-                        SizedBox(
-                          width: ResponsiveUtils.responsive(
-                            context,
-                            mobile: 48.0,
-                            tablet: 52.0,
-                            desktop: 56.0,
-                          ),
-                        ),
-                    ],
-                  ),
-
-                  // Secondary actions row - Compact
-                  SizedBox(
-                    height: ResponsiveUtils.adaptivePadding(
-                      context,
-                      mobile: 8.0,
-                    ),
-                  ),
-                  Row(
-                    mainAxisAlignment: MainAxisAlignment.center,
-                    children: [
-                      // Auto-scroll toggle
-                      Material(
-                        color: Colors.transparent,
-                        child: InkWell(
-                          onTap: () {
-                            HapticFeedback.lightImpact();
-                            setState(() {
-                              _isAutoScrollEnabled = !_isAutoScrollEnabled;
-                              _shouldAutoScroll = _isAutoScrollEnabled;
-                            });
-                            final isAudioPlaying = ref.read(
-                              isAudioPlayingProvider,
-                            );
-                            final currentSurah = ref.read(
-                              currentPlayingSurahProvider,
-                            );
-                            final isThisSurahPlaying =
-                                currentSurah == widget.surah.number;
-
-                            if (_isAutoScrollEnabled &&
-                                isAudioPlaying &&
-                                isThisSurahPlaying) {
-                              _startContinuousScroll();
-                            } else {
-                              _stopContinuousScroll();
-                            }
-                          },
-                          borderRadius: BorderRadius.circular(
-                            ResponsiveUtils.adaptiveBorderRadius(
-                              context,
-                              base: 8.0,
-                            ),
-                          ),
-                          child: Container(
-                            padding: EdgeInsets.symmetric(
-                              horizontal: ResponsiveUtils.adaptivePadding(
-                                context,
-                                mobile: 10.0,
-                              ),
-                              vertical: ResponsiveUtils.adaptivePadding(
-                                context,
-                                mobile: 6.0,
-                              ),
-                            ),
-                            decoration: BoxDecoration(
-                              color: AppColors.pureWhite.withOpacity(
-                                _isAutoScrollEnabled ? 0.25 : 0.15,
-                              ),
-                              borderRadius: BorderRadius.circular(
-                                ResponsiveUtils.adaptiveBorderRadius(
-                                  context,
-                                  base: 8.0,
-                                ),
-                              ),
-                            ),
-                            child: Row(
-                              mainAxisSize: MainAxisSize.min,
-                              children: [
-                                Icon(
-                                  _isAutoScrollEnabled
-                                      ? Icons.swap_vertical_circle
-                                      : Icons.swap_vertical_circle_outlined,
-                                  color: AppColors.pureWhite,
-                                  size: ResponsiveUtils.adaptiveIconSize(
-                                    context,
-                                    base: 16.0,
-                                  ),
-                                ),
-                                SizedBox(
-                                  width: ResponsiveUtils.adaptivePadding(
-                                    context,
-                                    mobile: 4.0,
-                                  ),
-                                ),
-                                Text(
-                                  'Auto-scroll',
-                                  style: TextStyle(
-                                    color: AppColors.pureWhite.withOpacity(0.9),
-                                    fontSize: ResponsiveUtils.adaptiveFontSize(
-                                      context,
-                                      mobile: 11,
-                                      tablet: 12,
-                                      desktop: 13,
-                                    ),
-                                    fontWeight: FontWeight.w500,
-                                  ),
-                                ),
-                              ],
-                            ),
-                          ),
-                        ),
-                      ),
-                      SizedBox(
-                        width: ResponsiveUtils.adaptivePadding(
-                          context,
-                          mobile: 8.0,
-                        ),
-                      ),
-                      // Bookmark button
-                      if (currentAyahIndex != null && currentAyahIndex > 0)
-                        Builder(
-                          builder: (context) {
-                            final ayahNumber = widget.surah.number == 9
-                                ? currentAyahIndex
-                                : currentAyahIndex - 1;
-                            final isAyahFavorite = ref.watch(
-                              isAyahFavoriteProvider((
-                                surah: widget.surah.number,
-                                ayah: ayahNumber,
-                              )),
-                            );
-                            return Material(
-                              color: Colors.transparent,
-                              child: InkWell(
-                                onTap: () async {
-                                  HapticFeedback.lightImpact();
-                                  final favoritesNotifier = ref.read(
-                                    favoritesProvider.notifier,
-                                  );
-                                  await favoritesNotifier.toggleAyahFavorite(
-                                    widget.surah.number,
-                                    ayahNumber,
-                                  );
-                                  if (mounted) {
-                                    ScaffoldMessenger.of(context).showSnackBar(
-                                      SnackBar(
-                                        content: Text(
-                                          isAyahFavorite
-                                              ? 'Ayah retiré des favoris'
-                                              : 'Ayah ajouté aux favoris',
-                                        ),
-                                        backgroundColor: AppColors.luxuryGold,
-                                        duration: const Duration(seconds: 2),
-                                      ),
-                                    );
-                                  }
-                                },
-                                borderRadius: BorderRadius.circular(
-                                  ResponsiveUtils.adaptiveBorderRadius(
-                                    context,
-                                    base: 8.0,
-                                  ),
-                                ),
-                                child: Container(
-                                  padding: EdgeInsets.symmetric(
-                                    horizontal: ResponsiveUtils.adaptivePadding(
-                                      context,
-                                      mobile: 10.0,
-                                    ),
-                                    vertical: ResponsiveUtils.adaptivePadding(
-                                      context,
-                                      mobile: 6.0,
-                                    ),
-                                  ),
-                                  decoration: BoxDecoration(
-                                    color: AppColors.pureWhite.withOpacity(
-                                      isAyahFavorite ? 0.25 : 0.15,
-                                    ),
-                                    borderRadius: BorderRadius.circular(
-                                      ResponsiveUtils.adaptiveBorderRadius(
-                                        context,
-                                        base: 8.0,
-                                      ),
-                                    ),
-                                  ),
-                                  child: Row(
-                                    mainAxisSize: MainAxisSize.min,
-                                    children: [
-                                      Icon(
-                                        isAyahFavorite
-                                            ? Icons.bookmark
-                                            : Icons.bookmark_border,
-                                        color: isAyahFavorite
-                                            ? AppColors.luxuryGold
-                                            : AppColors.pureWhite,
-                                        size: ResponsiveUtils.adaptiveIconSize(
-                                          context,
-                                          base: 16.0,
-                                        ),
-                                      ),
-                                      SizedBox(
-                                        width: ResponsiveUtils.adaptivePadding(
-                                          context,
-                                          mobile: 4.0,
-                                        ),
-                                      ),
-                                      Text(
-                                        'Bookmark',
-                                        style: TextStyle(
-                                          color: AppColors.pureWhite
-                                              .withOpacity(0.9),
-                                          fontSize:
-                                              ResponsiveUtils.adaptiveFontSize(
-                                                context,
-                                                mobile: 11,
-                                                tablet: 12,
-                                                desktop: 13,
-                                              ),
-                                          fontWeight: FontWeight.w500,
-                                        ),
-                                      ),
-                                    ],
-                                  ),
-                                ),
-                              ),
-                            );
-                          },
-                        ),
-                    ],
-                  ),
-                ],
-              ),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-
-  /// Afficher le panneau de paramètres
-  void _showSettingsPanel(bool isDark) {
-    HapticFeedback.lightImpact();
-    showModalBottomSheet(
-      context: context,
-      isScrollControlled: true,
-      backgroundColor: Colors.transparent,
-      isDismissible: true,
-      enableDrag: true,
-      builder: (context) {
-        return _SettingsPanelContent(
-          isDark: isDark,
-          surahNumber: widget.surah.number,
-          showScriptSelector: (ctx, dark, r) =>
-              _showScriptSelector(ctx, dark, r),
-          showReciterSelector: (ctx, dark, r) =>
-              _showReciterSelector(ctx, dark, r),
-          showTranslationSelector: (ctx, dark, r) =>
-              _showTranslationSelector(ctx, dark, r),
-          showRepetitionSelector: (ctx, dark, r) =>
-              _showRepetitionSelector(ctx, dark, r),
-          downloadSurahAudio: (dark) => _downloadSurahAudio(dark),
-          isAutoScrollEnabled: _isAutoScrollEnabled,
-          showTranslation: _showTranslation,
-          onAutoScrollChanged: (value) {
-            setState(() {
-              _isAutoScrollEnabled = value;
-              _shouldAutoScroll = value;
-            });
-            final isAudioPlaying = ref.read(isAudioPlayingProvider);
-            final currentSurah = ref.read(currentPlayingSurahProvider);
-            final isThisSurahPlaying = currentSurah == widget.surah.number;
-
-            if (_isAutoScrollEnabled && isAudioPlaying && isThisSurahPlaying) {
-              _startContinuousScroll();
-            } else {
-              _stopContinuousScroll();
-            }
-          },
-          onTranslationChanged: (value) {
-            setState(() {
-              _showTranslation = value;
-            });
-          },
-        );
-      },
     );
   }
 
@@ -3324,7 +3063,7 @@ class _SurahDetailScreenState extends ConsumerState<SurahDetailScreen>
                                   ),
                                 ),
                               );
-                            }).toList(),
+                            }),
                             SizedBox(
                               height: ResponsiveUtils.adaptivePadding(
                                 context,
@@ -3660,10 +3399,10 @@ class _SurahDetailScreenState extends ConsumerState<SurahDetailScreen>
                                     ),
                                   ),
                                 );
-                              }).toList(),
+                              }),
                             ],
                           );
-                        }).toList(),
+                        }),
                         SizedBox(
                           height: ResponsiveUtils.adaptivePadding(
                             context,
@@ -3933,7 +3672,7 @@ class _SurahDetailScreenState extends ConsumerState<SurahDetailScreen>
                               ),
                             ),
                           );
-                        }).toList(),
+                        }),
                         SizedBox(
                           height: ResponsiveUtils.adaptivePadding(
                             context,
@@ -4261,7 +4000,7 @@ class _SurahDetailScreenState extends ConsumerState<SurahDetailScreen>
                                       ),
                                     ),
                                   );
-                                }).toList(),
+                                }),
                                 SizedBox(
                                   height: ResponsiveUtils.adaptivePadding(
                                     context,
@@ -4483,7 +4222,7 @@ class _SurahDetailScreenState extends ConsumerState<SurahDetailScreen>
       final audioUrlsAsync = ref.read(
         surahAudioUrlsProvider(widget.surah.number),
       );
-      final audioUrls = await audioUrlsAsync
+      final audioUrls = audioUrlsAsync
           .whenData((urls) => urls)
           .when(
             data: (urls) => urls,
@@ -4643,6 +4382,7 @@ class _SettingsPanelContent extends ConsumerStatefulWidget {
   final Function(BuildContext, bool, WidgetRef) showReciterSelector;
   final Function(BuildContext, bool, WidgetRef) showTranslationSelector;
   final Function(BuildContext, bool, WidgetRef) showRepetitionSelector;
+  final void Function(BuildContext, WidgetRef) showPauseMarksLegend;
   final Function(bool) downloadSurahAudio;
   final bool isAutoScrollEnabled;
   final bool showTranslation;
@@ -4656,6 +4396,7 @@ class _SettingsPanelContent extends ConsumerStatefulWidget {
     required this.showReciterSelector,
     required this.showTranslationSelector,
     required this.showRepetitionSelector,
+    required this.showPauseMarksLegend,
     required this.downloadSurahAudio,
     required this.isAutoScrollEnabled,
     required this.showTranslation,
@@ -4668,43 +4409,30 @@ class _SettingsPanelContent extends ConsumerStatefulWidget {
       _SettingsPanelContentState();
 }
 
-class _SettingsPanelContentState extends ConsumerState<_SettingsPanelContent>
-    with SingleTickerProviderStateMixin {
-  late TabController _tabController;
-
-  @override
-  void initState() {
-    super.initState();
-    _tabController = TabController(length: 3, vsync: this);
-  }
-
-  @override
-  void dispose() {
-    _tabController.dispose();
-    super.dispose();
-  }
-
+class _SettingsPanelContentState extends ConsumerState<_SettingsPanelContent> {
   @override
   Widget build(BuildContext context) {
+    final screenWidth = MediaQuery.of(context).size.width;
     final screenHeight = MediaQuery.of(context).size.height;
-    final maxHeight = ResponsiveUtils.responsive(
+    final panelWidth = ResponsiveUtils.responsive(
       context,
-      mobile: screenHeight * 0.7,
-      tablet: screenHeight * 0.65,
-      desktop: screenHeight * 0.6,
+      mobile: screenWidth * 0.88,
+      tablet: (screenWidth * 0.5).clamp(320.0, 420.0),
+      desktop: 420.0,
     );
 
     return AnimatedContainer(
       duration: const Duration(milliseconds: 300),
       curve: Curves.easeOutCubic,
-      constraints: BoxConstraints(maxHeight: maxHeight),
+      width: panelWidth,
+      height: screenHeight,
       decoration: BoxDecoration(
         color: widget.isDark ? AppColors.darkSurface : AppColors.pureWhite,
         borderRadius: BorderRadius.only(
           topLeft: Radius.circular(
             ResponsiveUtils.adaptiveBorderRadius(context, base: 24.0),
           ),
-          topRight: Radius.circular(
+          bottomLeft: Radius.circular(
             ResponsiveUtils.adaptiveBorderRadius(context, base: 24.0),
           ),
         ),
@@ -4712,8 +4440,8 @@ class _SettingsPanelContentState extends ConsumerState<_SettingsPanelContent>
           BoxShadow(
             color: Colors.black.withOpacity(0.2),
             blurRadius: 20,
-            spreadRadius: 5,
-            offset: const Offset(0, -5),
+            spreadRadius: -5,
+            offset: const Offset(-5, 0),
           ),
         ],
       ),
@@ -4739,7 +4467,7 @@ class _SettingsPanelContentState extends ConsumerState<_SettingsPanelContent>
                 borderRadius: BorderRadius.circular(2),
               ),
             ),
-            // Header avec titre et bouton fermer - Compact
+            // Header
             Padding(
               padding: EdgeInsets.symmetric(
                 horizontal: ResponsiveUtils.adaptivePadding(
@@ -4808,76 +4536,23 @@ class _SettingsPanelContentState extends ConsumerState<_SettingsPanelContent>
                 ],
               ),
             ),
-            // Tabs - Compact
-            Container(
-              margin: EdgeInsets.symmetric(
-                horizontal: ResponsiveUtils.adaptivePadding(
-                  context,
-                  mobile: 16.0,
-                  tablet: 20.0,
-                  desktop: 24.0,
-                ),
-              ),
-              decoration: BoxDecoration(
-                color: widget.isDark
-                    ? AppColors.darkCard
-                    : AppColors.ivory.withOpacity(0.5),
-                borderRadius: BorderRadius.circular(
-                  ResponsiveUtils.adaptiveBorderRadius(context, base: 10.0),
-                ),
-              ),
-              child: TabBar(
-                controller: _tabController,
-                indicator: BoxDecoration(
-                  color: AppColors.luxuryGold,
-                  borderRadius: BorderRadius.circular(
-                    ResponsiveUtils.adaptiveBorderRadius(context, base: 8.0),
-                  ),
-                ),
-                indicatorSize: TabBarIndicatorSize.tab,
-                labelColor: AppColors.pureWhite,
-                unselectedLabelColor: widget.isDark
-                    ? AppColors.pureWhite.withOpacity(0.6)
-                    : AppColors.textSecondary,
-                labelStyle: TextStyle(
-                  fontSize: ResponsiveUtils.adaptiveFontSize(
-                    context,
-                    mobile: 13,
-                    tablet: 14,
-                    desktop: 15,
-                  ),
-                  fontWeight: FontWeight.w600,
-                ),
-                unselectedLabelStyle: TextStyle(
-                  fontSize: ResponsiveUtils.adaptiveFontSize(
-                    context,
-                    mobile: 13,
-                    tablet: 14,
-                    desktop: 15,
-                  ),
-                  fontWeight: FontWeight.normal,
-                ),
-                dividerColor: Colors.transparent,
-                tabs: const [
-                  Tab(text: 'Display'),
-                  Tab(text: 'Text'),
-                  Tab(text: 'Audio'),
-                ],
-              ),
-            ),
-            SizedBox(
-              height: ResponsiveUtils.adaptivePadding(context, mobile: 12.0),
-            ),
-            // Tab content - Use Flexible for proper constraints
-            Flexible(
-              child: TabBarView(
-                controller: _tabController,
+            // Single scrollable settings page
+            Expanded(
+              child: SingleChildScrollView(
                 physics: const ClampingScrollPhysics(),
-                children: [
-                  _buildDisplayTab(context),
-                  _buildTextTab(context),
-                  _buildAudioTab(context),
-                ],
+                padding: EdgeInsets.symmetric(
+                  horizontal: ResponsiveUtils.adaptivePadding(
+                    context,
+                    mobile: 16.0,
+                    tablet: 20.0,
+                    desktop: 24.0,
+                  ),
+                  vertical: ResponsiveUtils.adaptivePadding(
+                    context,
+                    mobile: 4.0,
+                  ),
+                ),
+                child: _buildSinglePageContent(context),
               ),
             ),
           ],
@@ -4886,6 +4561,752 @@ class _SettingsPanelContentState extends ConsumerState<_SettingsPanelContent>
     );
   }
 
+  Widget _sectionHeader(String title) {
+    return Padding(
+      padding: EdgeInsets.only(
+        top: ResponsiveUtils.adaptivePadding(context, mobile: 16.0),
+        bottom: ResponsiveUtils.adaptivePadding(context, mobile: 8.0),
+      ),
+      child: Text(
+        title,
+        style: TextStyle(
+          color: AppColors.luxuryGold,
+          fontSize: ResponsiveUtils.adaptiveFontSize(
+            context,
+            mobile: 15,
+            tablet: 16,
+            desktop: 17,
+          ),
+          fontWeight: FontWeight.w600,
+        ),
+      ),
+    );
+  }
+
+  Widget _checkboxRow({
+    required String label,
+    required bool value,
+    required ValueChanged<bool> onChanged,
+  }) {
+    return Material(
+      color: Colors.transparent,
+      child: InkWell(
+        onTap: () {
+          HapticFeedback.selectionClick();
+          onChanged(!value);
+        },
+        borderRadius: BorderRadius.circular(
+          ResponsiveUtils.adaptiveBorderRadius(context, base: 8.0),
+        ),
+        child: Padding(
+          padding: EdgeInsets.symmetric(
+            vertical: ResponsiveUtils.adaptivePadding(context, mobile: 10.0),
+          ),
+          child: Row(
+            children: [
+              SizedBox(
+                width: 24,
+                height: 24,
+                child: Checkbox(
+                  value: value,
+                  onChanged: (v) {
+                    HapticFeedback.selectionClick();
+                    onChanged(v ?? false);
+                  },
+                  activeColor: AppColors.luxuryGold,
+                  fillColor: WidgetStateProperty.resolveWith((states) {
+                    if (states.contains(WidgetState.selected)) {
+                      return AppColors.luxuryGold;
+                    }
+                    return Colors.transparent;
+                  }),
+                ),
+              ),
+              SizedBox(
+                width: ResponsiveUtils.adaptivePadding(context, mobile: 12.0),
+              ),
+              Expanded(
+                child: Text(
+                  label,
+                  style: TextStyle(
+                    color: widget.isDark
+                        ? AppColors.pureWhite
+                        : AppColors.textPrimary,
+                    fontSize: ResponsiveUtils.adaptiveFontSize(
+                      context,
+                      mobile: 15,
+                      tablet: 16,
+                      desktop: 17,
+                    ),
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _settingsTile({
+    required String label,
+    required String subtitle,
+    required VoidCallback onTap,
+  }) {
+    return Material(
+      color: Colors.transparent,
+      child: InkWell(
+        onTap: () {
+          HapticFeedback.lightImpact();
+          onTap();
+        },
+        borderRadius: BorderRadius.circular(
+          ResponsiveUtils.adaptiveBorderRadius(context, base: 8.0),
+        ),
+        child: Padding(
+          padding: EdgeInsets.symmetric(
+            vertical: ResponsiveUtils.adaptivePadding(context, mobile: 12.0),
+          ),
+          child: Row(
+            children: [
+              Expanded(
+                flex: 2,
+                child: Text(
+                  label,
+                  style: TextStyle(
+                    color: widget.isDark
+                        ? AppColors.pureWhite
+                        : AppColors.textPrimary,
+                    fontSize: ResponsiveUtils.adaptiveFontSize(
+                      context,
+                      mobile: 15,
+                      tablet: 16,
+                      desktop: 17,
+                    ),
+                  ),
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                ),
+              ),
+              SizedBox(
+                width: ResponsiveUtils.adaptivePadding(context, mobile: 8.0),
+              ),
+              Flexible(
+                child: Text(
+                  subtitle,
+                  style: TextStyle(
+                    color: widget.isDark
+                        ? AppColors.pureWhite.withOpacity(0.6)
+                        : AppColors.textSecondary,
+                    fontSize: ResponsiveUtils.adaptiveFontSize(
+                      context,
+                      mobile: 13,
+                      tablet: 14,
+                      desktop: 15,
+                    ),
+                  ),
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  textAlign: TextAlign.end,
+                ),
+              ),
+              SizedBox(
+                width: ResponsiveUtils.adaptivePadding(context, mobile: 4.0),
+              ),
+              Icon(
+                Icons.chevron_right,
+                color: widget.isDark
+                    ? AppColors.pureWhite.withOpacity(0.5)
+                    : AppColors.textSecondary,
+                size: 20,
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildSinglePageContent(BuildContext context) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        // ——— Vue ———
+        _sectionHeader('Vue'),
+        Consumer(
+          builder: (context, ref, child) {
+            final mode = ref.watch(readingModeProvider);
+            return Column(
+              children: [
+                _radioRow('Page', 'page', mode, () {
+                  HapticFeedback.selectionClick();
+                  ref.read(readingModeProvider.notifier).setReadingMode('page');
+                }),
+                _radioRow('Liste', 'list', mode, () {
+                  HapticFeedback.selectionClick();
+                  ref.read(readingModeProvider.notifier).setReadingMode('list');
+                }),
+              ],
+            );
+          },
+        ),
+
+        // ——— Contenu ———
+        _sectionHeader('Contenu'),
+        _checkboxRow(
+          label: 'Arabe',
+          value: true,
+          onChanged: (_) {}, // placeholder: Arabic always shown
+        ),
+        Consumer(
+          builder: (context, ref, child) {
+            final showTajweed = ref.watch(tajweedColorsProvider);
+            return _checkboxRow(
+              label: 'Tajwid',
+              value: showTajweed,
+              onChanged: (v) =>
+                  ref.read(tajweedColorsProvider.notifier).toggle(v),
+            );
+          },
+        ),
+        _checkboxRow(
+          label: 'Traduction',
+          value: widget.showTranslation,
+          onChanged: widget.onTranslationChanged,
+        ),
+        _checkboxRow(
+          label: 'Tafsirs',
+          value: false,
+          onChanged: (_) {
+            if (mounted) {
+              ScaffoldMessenger.of(context).showSnackBar(
+                SnackBar(
+                  content: const Text(
+                    'Les Tafsirs seront disponibles dans une prochaine mise à jour.',
+                  ),
+                  backgroundColor: AppColors.luxuryGold,
+                  duration: const Duration(seconds: 2),
+                  behavior: SnackBarBehavior.floating,
+                ),
+              );
+            }
+          },
+        ),
+        _checkboxRow(
+          label: 'Mot par Mot',
+          value: false,
+          onChanged: (_) {
+            if (mounted) {
+              ScaffoldMessenger.of(context).showSnackBar(
+                SnackBar(
+                  content: const Text(
+                    'L\'affichage mot par mot sera disponible dans une prochaine mise à jour.',
+                  ),
+                  backgroundColor: AppColors.luxuryGold,
+                  duration: const Duration(seconds: 2),
+                  behavior: SnackBarBehavior.floating,
+                ),
+              );
+            }
+          },
+        ),
+        Consumer(
+          builder: (context, ref, child) {
+            final selectedId = ref.watch(translationEditionProvider);
+            final name = AvailableTranslations.getName(selectedId);
+            return _settingsTile(
+              label: 'Traductions',
+              subtitle: name.isNotEmpty ? name : '1 sélectionnée',
+              onTap: () {
+                Navigator.pop(context);
+                widget.showTranslationSelector(context, widget.isDark, ref);
+              },
+            );
+          },
+        ),
+        _settingsTile(
+          label: 'Tafsirs',
+          subtitle: 'Bientôt disponible',
+          onTap: () {
+            if (mounted) {
+              ScaffoldMessenger.of(context).showSnackBar(
+                SnackBar(
+                  content: const Text(
+                    'La sélection des Tafsirs sera disponible dans une prochaine mise à jour.',
+                  ),
+                  backgroundColor: AppColors.luxuryGold,
+                  duration: const Duration(seconds: 2),
+                  behavior: SnackBarBehavior.floating,
+                ),
+              );
+            }
+          },
+        ),
+        _settingsTile(
+          label: 'Mot par Mot',
+          subtitle: 'Bientôt disponible',
+          onTap: () {
+            if (mounted) {
+              ScaffoldMessenger.of(context).showSnackBar(
+                SnackBar(
+                  content: const Text(
+                    'L\'affichage mot par mot sera disponible dans une prochaine mise à jour.',
+                  ),
+                  backgroundColor: AppColors.luxuryGold,
+                  duration: const Duration(seconds: 2),
+                  behavior: SnackBarBehavior.floating,
+                ),
+              );
+            }
+          },
+        ),
+
+        // ——— Type de Mushaf ———
+        _sectionHeader('Type de Mushaf'),
+        Consumer(
+          builder: (context, ref, child) {
+            final scriptId = ref.watch(arabicScriptProvider);
+            final editionsAsync = ref.watch(arabicScriptEditionsProvider);
+            final displayName = editionsAsync.when(
+              data: (list) => list
+                  .where((e) => e.identifier == scriptId)
+                  .map((e) =>
+                      e.englishName.isNotEmpty ? e.englishName : e.name)
+                  .firstOrNull ??
+                  'Mushaf Unicode Text',
+              loading: () => 'Mushaf Unicode Text',
+              error: (_, __) => 'Mushaf Unicode Text',
+            );
+            return _settingsTile(
+              label: 'Type de Mushaf',
+              subtitle: displayName,
+              onTap: () {
+                Navigator.pop(context);
+                widget.showScriptSelector(context, widget.isDark, ref);
+              },
+            );
+          },
+        ),
+
+        // ——— Règles de Tajwid ———
+        _sectionHeader('Règles de Tajwid'),
+        _settingsTile(
+          label: 'Règles de Tajwid',
+          subtitle: 'Symboles d\'arrêt, règles de prononciation',
+          onTap: () {
+            if (!mounted) return;
+            showDialog(
+              context: context,
+              builder: (context) => AlertDialog(
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(
+                    ResponsiveUtils.adaptiveBorderRadius(context, base: 20.0),
+                  ),
+                ),
+                backgroundColor: widget.isDark
+                    ? AppColors.darkSurface
+                    : AppColors.pureWhite,
+                title: Row(
+                  children: [
+                    Icon(
+                      Icons.menu_book_rounded,
+                      color: AppColors.luxuryGold,
+                      size: ResponsiveUtils.adaptiveIconSize(context, base: 24.0),
+                    ),
+                    SizedBox(
+                      width: ResponsiveUtils.adaptivePadding(context, mobile: 10.0),
+                    ),
+                    Text(
+                      'Règles de Tajwid',
+                      style: TextStyle(
+                        color: widget.isDark
+                            ? AppColors.pureWhite
+                            : AppColors.textPrimary,
+                        fontSize: ResponsiveUtils.adaptiveFontSize(
+                          context,
+                          mobile: 18,
+                          tablet: 20,
+                          desktop: 22,
+                        ),
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                  ],
+                ),
+                content: SingleChildScrollView(
+                  child: Text(
+                    'Le Tajwid désigne les règles de prononciation et de récitation du Coran. '
+                    'Il inclut les symboles d\'arrêt (waqf), les règles de prolongation (madd), '
+                    'd\'assimilation (idgham) et d\'articulation (makharij). '
+                    'Activez « Tajwid » dans Contenu pour afficher les couleurs de récitation dans le texte arabe.',
+                    style: TextStyle(
+                      color: widget.isDark
+                          ? AppColors.pureWhite.withOpacity(0.9)
+                          : AppColors.textSecondary,
+                      fontSize: ResponsiveUtils.adaptiveFontSize(
+                        context,
+                        mobile: 14,
+                        tablet: 15,
+                        desktop: 16,
+                      ),
+                      height: 1.5,
+                    ),
+                  ),
+                ),
+                actions: [
+                  TextButton(
+                    onPressed: () => Navigator.pop(context),
+                    child: Text(
+                      'Fermer',
+                      style: TextStyle(color: AppColors.luxuryGold),
+                    ),
+                  ),
+                ],
+              ),
+            );
+          },
+        ),
+
+        // ——— Font ———
+        _sectionHeader('Font'),
+        Consumer(
+          builder: (context, ref, child) {
+            final scriptId = ref.watch(arabicScriptProvider);
+            final editionsAsync = ref.watch(arabicScriptEditionsProvider);
+            final fontLabel = editionsAsync.when(
+              data: (list) {
+                final e = list
+                    .where((e) => e.identifier == scriptId)
+                    .firstOrNull;
+                if (e != null) {
+                  return e.englishName.isNotEmpty ? e.englishName : e.name;
+                }
+                return 'KFGQPC Hafs, Uthmani/Madani';
+              },
+              loading: () => 'KFGQPC Hafs, Uthmani/Madani',
+              error: (_, __) => 'KFGQPC Hafs, Uthmani/Madani',
+            );
+            return _settingsTile(
+              label: 'Police du texte arabe',
+              subtitle: fontLabel,
+              onTap: () {
+                Navigator.pop(context);
+                widget.showScriptSelector(context, widget.isDark, ref);
+              },
+            );
+          },
+        ),
+        Consumer(
+          builder: (context, ref, child) {
+            final fontSize = ref.watch(arabicFontSizeProvider);
+            return Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Padding(
+                  padding: EdgeInsets.only(
+                    top: ResponsiveUtils.adaptivePadding(context, mobile: 8.0),
+                    bottom: ResponsiveUtils.adaptivePadding(context, mobile: 4.0),
+                  ),
+                  child: Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      Text(
+                        'Taille police du texte arabe',
+                        style: TextStyle(
+                          color: widget.isDark
+                              ? AppColors.pureWhite
+                              : AppColors.textPrimary,
+                          fontSize: ResponsiveUtils.adaptiveFontSize(
+                            context,
+                            mobile: 15,
+                            tablet: 16,
+                            desktop: 17,
+                          ),
+                        ),
+                      ),
+                      Container(
+                        padding: EdgeInsets.symmetric(
+                          horizontal: ResponsiveUtils.adaptivePadding(
+                            context,
+                            mobile: 10.0,
+                          ),
+                          vertical: 4,
+                        ),
+                        decoration: BoxDecoration(
+                          color: AppColors.luxuryGold.withOpacity(0.15),
+                          borderRadius: BorderRadius.circular(
+                            ResponsiveUtils.adaptiveBorderRadius(
+                              context,
+                              base: 8.0,
+                            ),
+                          ),
+                        ),
+                        child: Text(
+                          '${fontSize.toInt()}',
+                          style: TextStyle(
+                            color: AppColors.luxuryGold,
+                            fontSize: ResponsiveUtils.adaptiveFontSize(
+                              context,
+                              mobile: 14,
+                              tablet: 15,
+                              desktop: 16,
+                            ),
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                Slider(
+                  value: fontSize,
+                  min: 20.0,
+                  max: 40.0,
+                  divisions: 20,
+                  activeColor: AppColors.luxuryGold,
+                  inactiveColor: widget.isDark
+                      ? AppColors.pureWhite.withOpacity(0.2)
+                      : AppColors.deepBlue.withOpacity(0.2),
+                  onChanged: (value) {
+                    HapticFeedback.selectionClick();
+                    ref.read(arabicFontSizeProvider.notifier).updateSize(value);
+                  },
+                ),
+              ],
+            );
+          },
+        ),
+
+        // ——— Thème (optional, compact) ———
+        _sectionHeader('Apparence'),
+        Consumer(
+          builder: (context, ref, child) {
+            final currentThemeMode = ref.watch(themeModeProvider);
+            final isLight = currentThemeMode == ThemeMode.light ||
+                (currentThemeMode == ThemeMode.system && !widget.isDark);
+            final isDark = currentThemeMode == ThemeMode.dark ||
+                (currentThemeMode == ThemeMode.system && widget.isDark);
+            return Row(
+              children: [
+                Expanded(
+                  child: _buildThemeCard(
+                    context,
+                    'Clair',
+                    AppColors.deepBlue,
+                    isLight,
+                    ThemeMode.light,
+                    ref,
+                  ),
+                ),
+                SizedBox(
+                  width: ResponsiveUtils.adaptivePadding(context, mobile: 12.0),
+                ),
+                Expanded(
+                  child: _buildThemeCard(
+                    context,
+                    'Sombre',
+                    AppColors.darkBackground,
+                    isDark,
+                    ThemeMode.dark,
+                    ref,
+                  ),
+                ),
+              ],
+            );
+          },
+        ),
+
+        // ——— Audio ———
+        _sectionHeader('Audio'),
+        _settingsTile(
+          label: 'Récitateur',
+          subtitle: '',
+          onTap: () {
+            Navigator.pop(context);
+            widget.showReciterSelector(context, widget.isDark, ref);
+          },
+        ),
+        Padding(
+          padding: EdgeInsets.symmetric(
+            vertical: ResponsiveUtils.adaptivePadding(context, mobile: 10.0),
+          ),
+          child: Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              Text(
+                'Défilement auto',
+                style: TextStyle(
+                  color: widget.isDark
+                      ? AppColors.pureWhite
+                      : AppColors.textPrimary,
+                  fontSize: ResponsiveUtils.adaptiveFontSize(
+                    context,
+                    mobile: 15,
+                    tablet: 16,
+                    desktop: 17,
+                  ),
+                ),
+              ),
+              Switch(
+                value: widget.isAutoScrollEnabled,
+                onChanged: widget.onAutoScrollChanged,
+                activeTrackColor: AppColors.luxuryGold.withOpacity(0.5),
+                thumbColor: WidgetStateProperty.resolveWith((states) {
+                  if (states.contains(WidgetState.selected)) {
+                    return AppColors.luxuryGold;
+                  }
+                  return null;
+                }),
+              ),
+            ],
+          ),
+        ),
+        Consumer(
+          builder: (context, ref, child) {
+            final repetition = ref.watch(repetitionProvider);
+            final labels = {
+              'never': 'Jamais',
+              'once': 'Une fois',
+              'twice': 'Deux fois',
+              'thrice': '3 fois',
+              'infinite': 'Infini',
+            };
+            return _settingsTile(
+              label: 'Répétition',
+              subtitle: labels[repetition] ?? repetition,
+              onTap: () {
+                Navigator.pop(context);
+                widget.showRepetitionSelector(context, widget.isDark, ref);
+              },
+            );
+          },
+        ),
+        SizedBox(
+          height: ResponsiveUtils.adaptivePadding(context, mobile: 12.0),
+        ),
+        Material(
+          color: Colors.transparent,
+          child: InkWell(
+            onTap: () {
+              HapticFeedback.mediumImpact();
+              Navigator.pop(context);
+              widget.downloadSurahAudio(widget.isDark);
+            },
+            borderRadius: BorderRadius.circular(
+              ResponsiveUtils.adaptiveBorderRadius(context, base: 10.0),
+            ),
+            child: Container(
+              width: double.infinity,
+              padding: EdgeInsets.symmetric(
+                vertical: ResponsiveUtils.adaptivePadding(
+                  context,
+                  mobile: 12.0,
+                ),
+              ),
+              decoration: BoxDecoration(
+                gradient: LinearGradient(
+                  colors: [
+                    AppColors.luxuryGold,
+                    AppColors.luxuryGold.withOpacity(0.8),
+                  ],
+                ),
+                borderRadius: BorderRadius.circular(
+                  ResponsiveUtils.adaptiveBorderRadius(context, base: 10.0),
+                ),
+              ),
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  Icon(
+                    Icons.download_rounded,
+                    color: AppColors.pureWhite,
+                    size: ResponsiveUtils.adaptiveIconSize(context, base: 20.0),
+                  ),
+                  SizedBox(
+                    width: ResponsiveUtils.adaptivePadding(
+                      context,
+                      mobile: 10.0,
+                    ),
+                  ),
+                  Text(
+                    'Télécharger l\'audio',
+                    style: TextStyle(
+                      color: AppColors.pureWhite,
+                      fontSize: ResponsiveUtils.adaptiveFontSize(
+                        context,
+                        mobile: 15,
+                        tablet: 16,
+                        desktop: 17,
+                      ),
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
+        SizedBox(
+          height: ResponsiveUtils.adaptivePadding(context, mobile: 24.0),
+        ),
+      ],
+    );
+  }
+
+  Widget _radioRow(
+    String label,
+    String value,
+    String groupValue,
+    VoidCallback onTap,
+  ) {
+    return Material(
+      color: Colors.transparent,
+      child: InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(
+          ResponsiveUtils.adaptiveBorderRadius(context, base: 8.0),
+        ),
+        child: Padding(
+          padding: EdgeInsets.symmetric(
+            vertical: ResponsiveUtils.adaptivePadding(context, mobile: 8.0),
+          ),
+          child: Row(
+            children: [
+              SizedBox(
+                width: 24,
+                height: 24,
+                child: Radio<String>(
+                  value: value,
+                  groupValue: groupValue,
+                  onChanged: (_) => onTap(),
+                  activeColor: AppColors.luxuryGold,
+                ),
+              ),
+              SizedBox(
+                width: ResponsiveUtils.adaptivePadding(context, mobile: 12.0),
+              ),
+              Text(
+                label,
+                style: TextStyle(
+                  color: widget.isDark
+                      ? AppColors.pureWhite
+                      : AppColors.textPrimary,
+                  fontSize: ResponsiveUtils.adaptiveFontSize(
+                    context,
+                    mobile: 15,
+                    tablet: 16,
+                    desktop: 17,
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  // ignore: unused_element - kept for reference; settings moved to _buildSinglePageContent
   Widget _buildDisplayTab(BuildContext context) {
     return SingleChildScrollView(
       physics: const ClampingScrollPhysics(),
@@ -5293,7 +5714,7 @@ class _SettingsPanelContentState extends ConsumerState<_SettingsPanelContent>
                 Switch(
                   value: widget.isAutoScrollEnabled,
                   onChanged: widget.onAutoScrollChanged,
-                  activeColor: AppColors.luxuryGold,
+                  activeThumbColor: AppColors.luxuryGold,
                 ),
               ],
             ),
@@ -5547,6 +5968,7 @@ class _SettingsPanelContentState extends ConsumerState<_SettingsPanelContent>
     );
   }
 
+  // ignore: unused_element - kept for reference; settings moved to _buildSinglePageContent
   Widget _buildTextTab(BuildContext context) {
     return SingleChildScrollView(
       physics: const ClampingScrollPhysics(),
@@ -5856,7 +6278,7 @@ class _SettingsPanelContentState extends ConsumerState<_SettingsPanelContent>
                           );
                         }
                       },
-                      activeColor: AppColors.luxuryGold,
+                      activeThumbColor: AppColors.luxuryGold,
                     ),
                   ],
                 ),
@@ -5924,7 +6346,7 @@ class _SettingsPanelContentState extends ConsumerState<_SettingsPanelContent>
                 Switch(
                   value: widget.showTranslation,
                   onChanged: widget.onTranslationChanged,
-                  activeColor: AppColors.luxuryGold,
+                  activeThumbColor: AppColors.luxuryGold,
                 ),
               ],
             ),
@@ -6029,91 +6451,128 @@ class _SettingsPanelContentState extends ConsumerState<_SettingsPanelContent>
           SizedBox(
             height: ResponsiveUtils.adaptivePadding(context, mobile: 20.0),
           ),
-          // Highlight Ayah section - Compact
+          // Marques de waqf (Tanzil) — guide la récitation (pause, continuer)
           Consumer(
             builder: (context, ref, child) {
-              final highlightAyah = ref.watch(highlightAyahProvider);
-              return Container(
-                padding: EdgeInsets.symmetric(
-                  horizontal: ResponsiveUtils.adaptivePadding(
-                    context,
-                    mobile: 12.0,
-                  ),
-                  vertical: ResponsiveUtils.adaptivePadding(
-                    context,
-                    mobile: 10.0,
-                  ),
+              final pauseMarksTanzil = ref.watch(pauseMarksTanzilProvider);
+              return InkWell(
+                onTap: () => widget.showPauseMarksLegend(context, ref),
+                borderRadius: BorderRadius.circular(
+                  ResponsiveUtils.adaptiveBorderRadius(context, base: 10.0),
                 ),
-                decoration: BoxDecoration(
-                  color: widget.isDark
-                      ? AppColors.darkCard
-                      : AppColors.ivory.withOpacity(0.3),
-                  borderRadius: BorderRadius.circular(
-                    ResponsiveUtils.adaptiveBorderRadius(context, base: 10.0),
+                child: Container(
+                  padding: EdgeInsets.symmetric(
+                    horizontal: ResponsiveUtils.adaptivePadding(
+                      context,
+                      mobile: 12.0,
+                    ),
+                    vertical: ResponsiveUtils.adaptivePadding(
+                      context,
+                      mobile: 10.0,
+                    ),
                   ),
-                ),
-                child: Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                  children: [
-                    Row(
-                      children: [
-                        Icon(
-                          Icons.highlight_alt,
-                          size: ResponsiveUtils.adaptiveIconSize(
-                            context,
-                            base: 18.0,
-                          ),
-                          color: highlightAyah
-                              ? AppColors.luxuryGold
-                              : (widget.isDark
-                                    ? AppColors.pureWhite.withOpacity(0.6)
-                                    : AppColors.textSecondary),
-                        ),
-                        SizedBox(
-                          width: ResponsiveUtils.adaptivePadding(
-                            context,
-                            mobile: 10.0,
-                          ),
-                        ),
-                        Text(
-                          'Highlight Ayah',
-                          style: TextStyle(
-                            color: widget.isDark
-                                ? AppColors.pureWhite
-                                : AppColors.textPrimary,
-                            fontSize: ResponsiveUtils.adaptiveFontSize(
+                  decoration: BoxDecoration(
+                    color: widget.isDark
+                        ? AppColors.darkCard
+                        : AppColors.ivory.withOpacity(0.3),
+                    borderRadius: BorderRadius.circular(
+                      ResponsiveUtils.adaptiveBorderRadius(context, base: 10.0),
+                    ),
+                  ),
+                  child: Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      Row(
+                        children: [
+                          Icon(
+                            Icons.bookmark_border,
+                            size: ResponsiveUtils.adaptiveIconSize(
                               context,
-                              mobile: 15,
-                              tablet: 16,
-                              desktop: 17,
+                              base: 18.0,
+                            ),
+                            color: pauseMarksTanzil
+                                ? AppColors.luxuryGold
+                                : (widget.isDark
+                                      ? AppColors.pureWhite.withOpacity(0.6)
+                                      : AppColors.textSecondary),
+                          ),
+                          SizedBox(
+                            width: ResponsiveUtils.adaptivePadding(
+                              context,
+                              mobile: 10.0,
                             ),
                           ),
-                        ),
-                      ],
-                    ),
-                    Switch(
-                      value: highlightAyah,
-                      onChanged: (value) {
-                        HapticFeedback.selectionClick();
-                        ref.read(highlightAyahProvider.notifier).toggle(value);
-                        if (mounted) {
-                          ScaffoldMessenger.of(context).showSnackBar(
-                            SnackBar(
-                              content: Text(
-                                value
-                                    ? 'Ayah highlighting enabled'
-                                    : 'Ayah highlighting disabled',
+                          Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Text(
+                                'Marques de waqf (Tanzil)',
+                                style: TextStyle(
+                                  color: widget.isDark
+                                      ? AppColors.pureWhite
+                                      : AppColors.textPrimary,
+                                  fontSize: ResponsiveUtils.adaptiveFontSize(
+                                    context,
+                                    mobile: 15,
+                                    tablet: 16,
+                                    desktop: 17,
+                                  ),
+                                ),
                               ),
-                              backgroundColor: AppColors.luxuryGold,
-                              duration: const Duration(seconds: 1),
-                              behavior: SnackBarBehavior.floating,
+                              Text(
+                                'م لا ج — pause, continuer',
+                                style: TextStyle(
+                                  color: widget.isDark
+                                      ? AppColors.pureWhite.withOpacity(0.6)
+                                      : AppColors.textSecondary,
+                                  fontSize: ResponsiveUtils.adaptiveFontSize(
+                                    context,
+                                    mobile: 12,
+                                    tablet: 13,
+                                    desktop: 14,
+                                  ),
+                                ),
+                              ),
+                            ],
+                          ),
+                          SizedBox(
+                            width: ResponsiveUtils.adaptivePadding(
+                              context,
+                              mobile: 6.0,
                             ),
-                          );
-                        }
-                      },
-                      activeColor: AppColors.luxuryGold,
-                    ),
-                  ],
+                          ),
+                          Icon(
+                            Icons.info_outline,
+                            size: 16,
+                            color: AppColors.luxuryGold.withOpacity(0.7),
+                          ),
+                        ],
+                      ),
+                      Switch(
+                        value: pauseMarksTanzil,
+                        onChanged: (value) {
+                          HapticFeedback.selectionClick();
+                          ref.read(pauseMarksTanzilProvider.notifier).toggle(value);
+                          if (mounted) {
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              SnackBar(
+                                content: Text(
+                                  value
+                                      ? 'Marques de waqf activées (Tanzil)'
+                                      : 'Marques de waqf désactivées',
+                                ),
+                                backgroundColor: AppColors.luxuryGold,
+                                duration: const Duration(seconds: 1),
+                                behavior: SnackBarBehavior.floating,
+                              ),
+                            );
+                          }
+                        },
+                        activeThumbColor: AppColors.luxuryGold,
+                      ),
+                    ],
+                  ),
                 ),
               );
             },
@@ -6262,6 +6721,7 @@ class _SettingsPanelContentState extends ConsumerState<_SettingsPanelContent>
     );
   }
 
+  // ignore: unused_element - kept for reference; settings moved to _buildSinglePageContent
   Widget _buildAudioTab(BuildContext context) {
     return SingleChildScrollView(
       physics: const ClampingScrollPhysics(),
@@ -6302,6 +6762,7 @@ class _SettingsPanelContentState extends ConsumerState<_SettingsPanelContent>
                 selectedReciterPersistentProvider,
               );
               final popularReciters = AudioService.popularReciters;
+              if (popularReciters.isEmpty) return const SizedBox.shrink();
               final reciter = popularReciters.firstWhere(
                 (r) => r['id'] == selectedReciter,
                 orElse: () => popularReciters.first,
@@ -6486,7 +6947,7 @@ class _SettingsPanelContentState extends ConsumerState<_SettingsPanelContent>
                 Switch(
                   value: widget.isAutoScrollEnabled,
                   onChanged: widget.onAutoScrollChanged,
-                  activeColor: AppColors.luxuryGold,
+                  activeThumbColor: AppColors.luxuryGold,
                 ),
               ],
             ),
@@ -6829,9 +7290,11 @@ class _JuzSurahAyahSelectorBottomSheetState
             if (!mounted) return;
 
             try {
-              final surah = surahs.firstWhere(
-                (s) => s.number == _selectedSurah,
-              );
+              final surahMatch = surahs
+                  .where((s) => s.number == _selectedSurah)
+                  .toList();
+              if (surahMatch.isEmpty) return;
+              final surah = surahMatch.first;
               final ayahIndex = (_selectedAyah! - 1).clamp(
                 0,
                 surah.numberOfAyahs - 1,
@@ -7150,11 +7613,15 @@ class _JuzSurahAyahSelectorBottomSheetState
                     child: ElevatedButton(
                       onPressed: () {
                         if (_selectedSurah != null) {
-                          final surahModel = surahsAsync.value?.firstWhere(
-                            (s) => s.number == _selectedSurah,
-                          );
-                          if (surahModel != null) {
-                            final surah = SurahAdapter.fromApiModel(surahModel);
+                          final list = surahsAsync.value;
+                          final surahModel = list != null && list.isNotEmpty
+                              ? list
+                                  .where((s) => s.number == _selectedSurah)
+                                  .toList()
+                              : <SurahModel>[];
+                          if (surahModel.isNotEmpty) {
+                            final surah = SurahAdapter.fromApiModel(
+                                surahModel.first);
                             HapticFeedback.mediumImpact();
                             widget.onSurahSelected(surah, _selectedAyah);
                           }
@@ -7206,12 +7673,12 @@ class _JuzSurahAyahSelectorBottomSheetState
       ..sort((a, b) => a.number.compareTo(b.number));
 
     // Get selected surah model
-    final selectedSurahModel = _selectedSurah != null
-        ? (surahs.firstWhere(
-            (s) => s.number == _selectedSurah,
-            orElse: () => surahs.first,
-          ))
-        : null;
+    SurahModel? selectedSurahModel;
+    if (_selectedSurah != null && surahs.isNotEmpty) {
+      final matches =
+          surahs.where((s) => s.number == _selectedSurah).toList();
+      if (matches.isNotEmpty) selectedSurahModel = matches.first;
+    }
 
     return Row(
       children: [

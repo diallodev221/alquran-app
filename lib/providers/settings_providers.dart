@@ -300,26 +300,26 @@ class RepetitionNotifier extends StateNotifier<String> {
   }
 }
 
-/// Provider pour le highlight des ayahs
-final highlightAyahProvider =
-    StateNotifierProvider<HighlightAyahNotifier, bool>((ref) {
+/// Marques de waqf Tanzil (pause marks) — remplace le highlight ayah.
+final pauseMarksTanzilProvider =
+    StateNotifierProvider<PauseMarksTanzilNotifier, bool>((ref) {
       final service = ref.watch(settingsServiceProvider);
-      return HighlightAyahNotifier(service);
+      return PauseMarksTanzilNotifier(service);
     });
 
-class HighlightAyahNotifier extends StateNotifier<bool> {
+class PauseMarksTanzilNotifier extends StateNotifier<bool> {
   final SettingsService _service;
 
-  HighlightAyahNotifier(this._service) : super(false) {
+  PauseMarksTanzilNotifier(this._service) : super(true) {
     _loadSetting();
   }
 
   Future<void> _loadSetting() async {
-    state = await _service.getHighlightAyah();
+    state = await _service.getPauseMarksTanzil();
   }
 
   Future<void> toggle(bool value) async {
-    await _service.setHighlightAyah(value);
+    await _service.setPauseMarksTanzil(value);
     state = value;
   }
 }

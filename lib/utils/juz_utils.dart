@@ -1,4 +1,5 @@
 /// Utility functions for Juz calculations and mappings
+library;
 
 /// Map of Juz number to the range of Surahs it contains
 /// This is based on standard Quran divisions (Hizb divisions)
@@ -33,7 +34,82 @@ final Map<int, List<int>> juzToSurahs = {
   27: [35, 36, 37], // Fatir (partial), Ya-Sin, As-Saffat (partial)
   28: [37, 38, 39], // As-Saffat (partial), Sad, Az-Zumar (partial)
   29: [39, 40, 41], // Az-Zumar (partial), Ghafir, Fussilat (partial)
-  30: [41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71, 72, 73, 74, 75, 76, 77, 78, 79, 80, 81, 82, 83, 84, 85, 86, 87, 88, 89, 90, 91, 92, 93, 94, 95, 96, 97, 98, 99, 100, 101, 102, 103, 104, 105, 106, 107, 108, 109, 110, 111, 112, 113, 114], // Fussilat (partial) to An-Nas
+  30: [
+    41,
+    42,
+    43,
+    44,
+    45,
+    46,
+    47,
+    48,
+    49,
+    50,
+    51,
+    52,
+    53,
+    54,
+    55,
+    56,
+    57,
+    58,
+    59,
+    60,
+    61,
+    62,
+    63,
+    64,
+    65,
+    66,
+    67,
+    68,
+    69,
+    70,
+    71,
+    72,
+    73,
+    74,
+    75,
+    76,
+    77,
+    78,
+    79,
+    80,
+    81,
+    82,
+    83,
+    84,
+    85,
+    86,
+    87,
+    88,
+    89,
+    90,
+    91,
+    92,
+    93,
+    94,
+    95,
+    96,
+    97,
+    98,
+    99,
+    100,
+    101,
+    102,
+    103,
+    104,
+    105,
+    106,
+    107,
+    108,
+    109,
+    110,
+    111,
+    112,
+    113,
+    114,
+  ], // Fussilat (partial) to An-Nas
 };
 
 /// Get the Juz number(s) that contain a specific surah
@@ -55,4 +131,12 @@ List<int> getSurahsInJuz(int juzNumber) {
 /// Get all Juz numbers (1-30)
 List<int> getAllJuzs() {
   return List.generate(30, (index) => index + 1);
+}
+
+/// Page mushaf standard Uthmani (604 pages, 6236 ayahs).
+/// Retourne la page (1–604) pour un numéro d'ayah global (1–6236).
+int getPageForGlobalAyah(int numberGlobal) {
+  if (numberGlobal < 1) return 1;
+  if (numberGlobal >= 6236) return 604;
+  return ((numberGlobal - 1) * 604 / 6236).floor() + 1;
 }
